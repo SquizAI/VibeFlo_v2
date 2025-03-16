@@ -6,14 +6,122 @@ import EnhancedSearch from './EnhancedSearch';
 import SecureNote from './SecureNote';
 import { 
   Calendar, Star, Flag, User, Bell, CheckSquare, Tag, 
-  Edit, Trash2, Lock, Pin, Heart, Plus, ChevronDown, ChevronRight, X 
+  Edit, Trash2, Lock, Pin, Heart, Plus, ChevronDown, ChevronRight, X,
+  Mic as MicrophoneIcon,
+  Search
 } from 'lucide-react';
+import { PlusIcon, XIcon } from 'lucide-react';
 
 interface NoteViewProps {
   onSwitchToCanvas: () => void;
+  selectedFolder?: string;
+  searchTerm?: string;
 }
 
-export const NoteView: React.FC<NoteViewProps> = ({ onSwitchToCanvas }) => {
+interface NoteCardProps {
+  note: NoteType;
+  onClick: () => void;
+  isSelected: boolean;
+  onDelete: () => void;
+}
+
+const NoteCard: React.FC<NoteCardProps> = ({ note, onClick, isSelected, onDelete }) => {
+  return (
+    <div 
+      className={`p-3 border rounded-md cursor-pointer transition-colors ${
+        isSelected ? 'bg-primary/10 border-primary' : 'bg-secondary border-border-light hover:bg-secondary-hover'
+      }`}
+      onClick={onClick}
+    >
+      <div className="flex justify-between items-start">
+        <h3 className="font-medium truncate">
+          {note.content && typeof note.content === 'string' 
+            ? note.content.split('\n')[0].substring(0, 40) || 'Untitled' 
+            : 'Untitled'}
+        </h3>
+        
+        <button 
+          className="p-1 text-muted hover:text-error rounded-full hover:bg-error/10 transition-colors"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
+      
+      <div className="flex items-center gap-2 mt-2 text-xs text-muted">
+        <span>{new Date(note.dueDate || Date.now()).toLocaleDateString()}</span>
+        
+        {note.category && (
+          <span className="px-1.5 py-0.5 bg-primary/10 text-primary rounded-full">
+            {note.category}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+interface NoteEditorProps {
+  note: NoteType;
+  onClose: () => void;
+  onUpdate: (note: NoteType) => void;
+}
+
+const NoteEditor: React.FC<NoteEditorProps> = ({ note, onClose, onUpdate }) => {
+  const [content, setContent] = useState(note.content || '');
+  
+  const handleSave = () => {
+    onUpdate({
+      ...note,
+      content
+    });
+  };
+  
+  return (
+    <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+      <div className="bg-card w-full max-w-2xl rounded-lg shadow-lg overflow-hidden">
+        <div className="flex justify-between items-center p-4 border-b border-border-light">
+          <h2 className="text-lg font-semibold">Edit Note</h2>
+          <button 
+            className="p-1 rounded-full hover:bg-secondary"
+            onClick={onClose}
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        
+        <div className="p-4">
+          <textarea
+            className="w-full h-64 p-3 bg-secondary border border-border-light rounded-md focus:outline-none focus:ring-1 focus:ring-primary"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder="Type your note here..."
+          />
+        </div>
+        
+        <div className="flex justify-end gap-2 p-4 border-t border-border-light">
+          <button 
+            className="px-4 py-2 border border-border-light rounded-md hover:bg-secondary transition-colors"
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button 
+            className="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover transition-colors"
+            onClick={handleSave}
+          >
+            Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const NoteView: React.FC<NoteViewProps> = ({ onSwitchToCanvas, selectedFolder = 'all', searchTerm = '' }) => {
   const { notes, addNote, deleteNote, updateNote, completeNote, setDueDate, setPriority, setAssignee } = useNoteStore();
   
   const [folders, setFolders] = useState<Folder[]>([
@@ -24,16 +132,25 @@ export const NoteView: React.FC<NoteViewProps> = ({ onSwitchToCanvas }) => {
     { id: 'tasks', name: 'Tasks', parentId: null }
   ]);
   
-  const [selectedFolder, setSelectedFolder] = useState<string>('all');
+  const [selectedFolderState, setSelectedFolderState] = useState<string>(selectedFolder);
   const [selectedNote, setSelectedNote] = useState<string | null>(null);
   const [filteredNotes, setFilteredNotes] = useState<NoteType[]>(notes);
   const [notesInView, setNotesInView] = useState<NoteType[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [searchQuery, setSearchQuery] = useState<string>(searchTerm);
   
-  // Filter notes based on selected folder
+  // Update selected folder when prop changes
+  useEffect(() => {
+    if (selectedFolder) {
+      setSelectedFolderState(selectedFolder);
+    }
+  }, [selectedFolder]);
+  
+  // Filter notes based on selected folder and search term
   useEffect(() => {
     let filtered: NoteType[] = [];
     
-    const folder = folders.find(f => f.id === selectedFolder);
+    const folder = folders.find(f => f.id === selectedFolderState);
     if (!folder) {
       setNotesInView(notes);
       return;
@@ -87,12 +204,22 @@ export const NoteView: React.FC<NoteViewProps> = ({ onSwitchToCanvas }) => {
     } else {
       // Regular folder - match by tag/label with folder name
       filtered = notes.filter(note => 
-        note.labels?.some(label => label.name === folder.name)
+        note.labels?.some(label => label.name === folder.name) || 
+        note.category === folder.id
+      );
+    }
+    
+    // Apply search filter if there's a search term
+    if (searchQuery) {
+      const search = searchQuery.toLowerCase();
+      filtered = filtered.filter(note => 
+        (note.content && note.content.toLowerCase().includes(search)) ||
+        (note.tasks && note.tasks.some(task => task.text.toLowerCase().includes(search)))
       );
     }
     
     setNotesInView(filtered);
-  }, [selectedFolder, notes, folders]);
+  }, [selectedFolderState, notes, folders, searchQuery]);
   
   // Handle folder creation
   const handleFolderCreate = (folder: Folder) => {
@@ -112,7 +239,7 @@ export const NoteView: React.FC<NoteViewProps> = ({ onSwitchToCanvas }) => {
     
     // If the deleted folder was selected, select 'All Notes'
     if (selectedFolder === folderId) {
-      setSelectedFolder('all');
+      setSelectedFolderState('all');
     }
   };
   
@@ -151,11 +278,9 @@ export const NoteView: React.FC<NoteViewProps> = ({ onSwitchToCanvas }) => {
   };
   
   // Handle note deletion
-  const handleDeleteNote = () => {
-    if (selectedNote) {
-      deleteNote(selectedNote);
-      setSelectedNote(null);
-    }
+  const handleDeleteNote = (noteId: string) => {
+    deleteNote(noteId);
+    setSelectedNote(null);
   };
   
   // Handle note content update
@@ -191,6 +316,8 @@ export const NoteView: React.FC<NoteViewProps> = ({ onSwitchToCanvas }) => {
       id: crypto.randomUUID(),
       text: 'New task',
       done: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
     
     const updatedTasks = [...(note.tasks || []), newTask];
@@ -255,291 +382,114 @@ export const NoteView: React.FC<NoteViewProps> = ({ onSwitchToCanvas }) => {
     }
   };
   
-  // Render note list based on folder selection and search
-  const renderNotesList = () => {
-    return (
-      <div className="notes-list">
-        {notesInView.length === 0 ? (
-          <div className="no-notes-message">
-            No notes found
-          </div>
-        ) : (
-          notesInView.map(note => {
-            const isSelected = selectedNote === note.id;
-            const isFavorite = note.labels?.some(l => l.name === 'Favorite');
-            
-            return (
-              <div 
-                key={note.id} 
-                className={`note-list-item ${isSelected ? 'selected' : ''}`}
-                onClick={() => handleNoteSelect(note.id)}
-              >
-                <div 
-                  className="note-color-indicator" 
-                  style={{ backgroundColor: note.color }}
-                />
-                
-                <div className="note-details">
-                  <div className="note-title">
-                    {note.content && typeof note.content === 'string' ? 
-                      note.content.split('\n')[0].substring(0, 40) || 'Untitled' : 
-                      'Untitled'
-                    }
-                  </div>
-                  
-                  <div className="note-metadata">
-                    {note.dueDate && (
-                      <span className="note-due-date">
-                        <Calendar size={12} />
-                        {new Date(note.dueDate).toLocaleDateString()}
-                      </span>
-                    )}
-                    
-                    {note.tasks && note.tasks.length > 0 && (
-                      <span className="note-tasks-count">
-                        <CheckSquare size={12} />
-                        {note.tasks.filter(t => t.done).length}/{note.tasks.length}
-                      </span>
-                    )}
-                    
-                    {note.content && 
-                     typeof note.content === 'string' && 
-                     note.content.startsWith('encrypted:') && (
-                      <span className="note-lock-icon"><Lock size={12} /></span>
-                    )}
-                  </div>
-                </div>
-                
-                {isFavorite && (
-                  <div className="note-favorite">
-                    <Star size={16} fill="#eab308" stroke="#eab308" />
-                  </div>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
-    );
+  // Add handleMicButtonClick function
+  const handleMicButtonClick = () => {
+    // TODO: Implement voice recording functionality
+    console.log('Starting voice recording...');
   };
   
-  // Render the details of the selected note
-  const renderNoteDetail = () => {
-    if (!selectedNote) {
-      return (
-        <div className="no-note-selected">
-          <p>Select a note to view details</p>
-          <button className="new-note-button" onClick={handleCreateNote}>
-            Create a new note
-          </button>
-        </div>
-      );
-    }
-    
-    const note = notes.find(n => n.id === selectedNote);
-    if (!note) return null;
-    
-    const isFavorite = note.labels?.some(l => l.name === 'Favorite');
-    
-    return (
-      <div className="note-detail">
-        <div className="note-detail-header">
-          <div className="note-actions">
-            <button 
-              className={`action-button favorite-button ${isFavorite ? 'active' : ''}`}
-              onClick={() => handleToggleFavorite(note.id)}
-              title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
-            >
-              <Star size={16} />
-            </button>
-            
-            <button 
-              className="action-button delete-button"
-              onClick={handleDeleteNote}
-              title="Delete note"
-            >
-              <Trash2 size={16} />
-            </button>
-          </div>
-          
-          <div className="note-metadata-actions">
-            <div className="metadata-group">
-              <button 
-                className="metadata-button"
-                onClick={() => {
-                  // Show date picker
-                  const date = prompt('Enter due date (YYYY-MM-DD):', note.dueDate || '');
-                  if (date) setDueDate(note.id, date);
-                }}
-              >
-                <Calendar size={16} />
-                {note.dueDate ? new Date(note.dueDate).toLocaleDateString() : 'Add date'}
-              </button>
-              
-              <div className="priority-selector">
-                <button 
-                  className="metadata-button"
-                  onClick={() => {
-                    // Toggle between priorities
-                    const priorities: ('low' | 'medium' | 'high')[] = ['low', 'medium', 'high'];
-                    const currentIndex = note.priority ? priorities.indexOf(note.priority) : -1;
-                    const nextIndex = (currentIndex + 1) % priorities.length;
-                    setPriority(note.id, priorities[nextIndex]);
-                  }}
-                >
-                  <Flag size={16} />
-                  {note.priority || 'Priority'}
-                </button>
-              </div>
-              
-              <button 
-                className="metadata-button"
-                onClick={() => {
-                  const assignee = prompt('Assign to:', note.assignee || '');
-                  if (assignee) setAssignee(note.id, assignee);
-                }}
-              >
-                <User size={16} />
-                {note.assignee || 'Assign'}
-              </button>
-            </div>
-            
-            <div className="tags-group">
-              {note.labels && note.labels
-                .filter(label => label.name !== 'Favorite' && label.name !== 'Secure')
-                .map(label => (
-                  <span 
-                    key={label.id} 
-                    className="note-tag"
-                    style={{ backgroundColor: label.color + '20', color: label.color }}
-                  >
-                    {label.name}
-                    <button 
-                      className="remove-tag"
-                      onClick={() => handleRemoveLabel(note.id, label.id)}
-                    >
-                      <X size={12} />
-                    </button>
-                  </span>
-                ))
-              }
-              
-              <button 
-                className="add-tag-button"
-                onClick={() => {
-                  const tagName = prompt('Enter tag name:');
-                  if (tagName) handleAddLabel(note.id, tagName);
-                }}
-              >
-                <Tag size={14} /> Add Tag
-              </button>
-            </div>
-          </div>
-        </div>
-        
-        <div className="note-content">
-          {note.content && 
-           typeof note.content === 'string' && 
-           note.content.startsWith('encrypted:') ? (
-            <SecureNote 
-              note={note} 
-              onContentChange={handleContentChange} 
-            />
-          ) : (
-            <textarea
-              value={note.content || ''}
-              onChange={(e) => handleContentChange(note.id, e.target.value)}
-              placeholder="Type your note here..."
-              className="note-textarea"
-            />
-          )}
-        </div>
-        
-        <div className="note-tasks">
-          <div className="tasks-header">
-            <h3>Tasks</h3>
-            <button 
-              className="add-task-button"
-              onClick={() => handleAddTask(note.id)}
-            >
-              <Plus size={14} /> Add Task
-            </button>
-          </div>
-          
-          {note.tasks && note.tasks.length > 0 ? (
-            <div className="tasks-list">
-              {note.tasks.map(task => (
-                <div key={task.id} className="task-item">
-                  <input
-                    type="checkbox"
-                    checked={task.done}
-                    onChange={() => handleToggleTask(note.id, task.id)}
-                    className="task-checkbox"
-                  />
-                  <span className={`task-text ${task.done ? 'completed' : ''}`}>
-                    {task.text}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="no-tasks">
-              No tasks yet. Click "Add Task" to create one.
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-  
+  // Render component logic
   return (
-    <div className="note-view">
-      <div className="note-view-header">
-        <h1>VibeFlo Notes</h1>
+    <div className="note-view h-full flex flex-col">
+      <div className="note-view-panel h-full overflow-hidden flex flex-col">
+        <div className="flex justify-between items-center p-4 border-b border-border-light">
+          <h2 className="text-xl font-semibold">Notes</h2>
+          
+          <div className="flex gap-2">
+            <div className="relative w-36">
+              <select
+                className="w-full p-2 bg-secondary border border-border-light rounded-md text-sm"
+                onChange={(e) => {
+                  // Add sorting logic here
+                  console.log('Sort by:', e.target.value);
+                }}
+              >
+                <option value="date-desc">Newest First</option>
+                <option value="date-asc">Oldest First</option>
+                <option value="alpha-asc">A-Z</option>
+                <option value="alpha-desc">Z-A</option>
+              </select>
+            </div>
+            
+            <button 
+              className="flex items-center gap-1 px-3 py-2 bg-primary text-white rounded-md hover:bg-primary-hover transition-colors"
+              onClick={handleCreateNote}
+            >
+              <Plus className="w-4 h-4" /> New
+            </button>
+          </div>
+        </div>
+        
+        <div className="p-4 border-b border-border-light">
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="Search notes..."
+              className="w-full p-2 pl-8 bg-secondary border border-border-light rounded-md"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            <Search className="w-4 h-4 absolute left-2 top-1/2 transform -translate-y-1/2 text-muted" />
+            {searchQuery && (
+              <X
+                className="w-4 h-4 absolute right-2 top-1/2 transform -translate-y-1/2 text-muted cursor-pointer"
+                onClick={() => setSearchQuery('')}
+              />
+            )}
+          </div>
+        </div>
+        
+        <div className="flex-1 overflow-auto p-4">
+          {isLoading ? (
+            <div className="flex justify-center items-center h-full">
+              <span className="loading loading-spinner loading-md"></span>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredNotes.length === 0 ? (
+                <div className="text-center py-8">
+                  <div className="text-muted">No notes found</div>
+                  <button 
+                    className="mt-2 px-3 py-1 bg-primary text-white rounded-md text-sm hover:bg-primary-hover transition-colors"
+                    onClick={handleCreateNote}
+                  >
+                    Create a new note
+                  </button>
+                </div>
+              ) : (
+                filteredNotes.map((note) => (
+                  <NoteCard
+                    key={note.id}
+                    note={note}
+                    onClick={() => handleNoteSelect(note.id)}
+                    isSelected={selectedNote === note.id}
+                    onDelete={() => handleDeleteNote(note.id)}
+                  />
+                ))
+              )}
+            </div>
+          )}
+        </div>
+        
         <button 
-          className="switch-view-button"
-          onClick={onSwitchToCanvas}
+          className="mic-button"
+          onClick={handleMicButtonClick}
+          title="Start Voice Recording"
         >
-          Switch to Canvas
+          <MicrophoneIcon className="w-6 h-6" />
         </button>
       </div>
       
-      <div className="note-view-container">
-        <div className="folder-sidebar">
-          <FolderNavigation
-            folders={folders}
-            notes={notes}
-            selectedFolder={selectedFolder}
-            onFolderSelect={setSelectedFolder}
-            onFolderCreate={handleFolderCreate}
-            onFolderUpdate={handleFolderUpdate}
-            onFolderDelete={handleFolderDelete}
-          />
-        </div>
-        
-        <div className="notes-panel">
-          <div className="notes-panel-header">
-            <EnhancedSearch
-              notes={notes}
-              onSearchResult={setNotesInView}
-              onNoteSelect={handleNoteSelect}
-            />
-            
-            <button 
-              className="new-note-button"
-              onClick={handleCreateNote}
-            >
-              <Plus size={16} /> New Note
-            </button>
-          </div>
-          
-          {renderNotesList()}
-        </div>
-        
-        <div className="note-detail-panel">
-          {renderNoteDetail()}
-        </div>
-      </div>
+      {selectedNote && (
+        <NoteEditor 
+          note={notes.find(n => n.id === selectedNote)!} 
+          onClose={() => setSelectedNote(null)} 
+          onUpdate={(updatedNote: NoteType) => {
+            updateNote(updatedNote.id, updatedNote);
+            setSelectedNote(updatedNote.id);
+          }}
+        />
+      )}
     </div>
   );
 };

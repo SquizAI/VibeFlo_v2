@@ -3196,20 +3196,21 @@
   right: 0;
   bottom: 0;
   pointer-events: none;
+  background-color: #000000; /* Crisp black background */
   background-image: 
-    linear-gradient(to right, rgba(65, 105, 225, 0.1) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(65, 105, 225, 0.1) 1px, transparent 1px);
+    linear-gradient(to right, rgba(25, 75, 255, 0.15) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(25, 75, 255, 0.15) 1px, transparent 1px);
   background-size: 20px 20px;
   z-index: 0;
-  filter: drop-shadow(0 0 2px rgba(65, 105, 225, 0.5));
+  filter: drop-shadow(0 0 3px rgba(25, 75, 255, 0.4));
 }
 
 /* When grid is active, make it more vibrant */
 .show-grid .canvas-grid-lines {
   background-image: 
-    linear-gradient(to right, rgba(65, 105, 225, 0.2) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(65, 105, 225, 0.2) 1px, transparent 1px);
-  filter: drop-shadow(0 0 4px rgba(65, 105, 225, 0.8));
+    linear-gradient(to right, rgba(25, 75, 255, 0.25) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(25, 75, 255, 0.25) 1px, transparent 1px);
+  filter: drop-shadow(0 0 5px rgba(25, 75, 255, 0.6));
 }
 
 /* Agent Assistant Indicator with improved tooltip */
@@ -3260,4 +3261,46 @@
 
 .agent-assistant-indicator:hover .agent-assistant-tooltip {
   display: block;
+}
+
+/* Override third-party tabs component */
+.tabs-trigger[role="tab"] {
+  display: none !important;
+}
+
+.tabs-trigger.active {
+  display: none !important;
+}
+
+/* Hide the tabs container */
+.tabs .border-b.border-border-light.px-2 {
+  display: none !important;
+}
+
+/* Hide the grid container for the tabs */
+.tabs-list.grid.grid-cols-3 {
+  display: none !important;
+}
+
+/* Add microphone button to Notes view */
+.note-view .mic-button {
+  position: fixed;
+  bottom: 24px;
+  right: 90px;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background-color: #ef4444;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  z-index: 900;
+  transition: all 0.2s ease;
+}
+
+.note-view .mic-button:hover {
+  background-color: #dc2626;
+  transform: scale(1.05);
 }

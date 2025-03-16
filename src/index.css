@@ -5,10 +5,10 @@
 @layer base {
   :root {
     /* Main background */
-    --app-bg: #0A0A12;
-    --card-bg: #16161E;
-    --card-hover: #21212C;
-    --node-bg: #21212C;
+    --app-bg: #000000;
+    --card-bg: #0D0D14;
+    --card-hover: #16161E;
+    --node-bg: #16161E;
     
     /* Text colors */
     --text-primary: #FFFFFF;
@@ -44,6 +44,16 @@
     --accent-amber-glow: rgba(255, 193, 7, 0.35);
     --accent-emerald-glow: rgba(76, 175, 80, 0.35);
     --accent-rose-glow: rgba(233, 30, 99, 0.35);
+
+    /* Add CSS variable for the color values used in the KanbanCard */
+    --color-blue-500: rgb(59, 130, 246);
+    --color-green-500: rgb(34, 197, 94);
+    --color-red-500: rgb(239, 68, 68);
+    --color-yellow-500: rgb(234, 179, 8);
+    --color-purple-500: rgb(168, 85, 247);
+    --color-pink-500: rgb(236, 72, 153);
+    --color-indigo-500: rgb(99, 102, 241);
+    --color-teal-500: rgb(20, 184, 166);
   }
 }
 
@@ -75,4 +85,95 @@
 
 .animate-strongPulse {
   animation: strongPulse 2s infinite;
+}
+
+/* Add custom scrollbar for the Kanban lanes */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(59, 130, 246, 0.3);
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(59, 130, 246, 0.5);
+}
+
+/* View transition animations */
+@keyframes fadeInTransition {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeOutTransition {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.view-transition {
+  animation: fadeOutTransition 0.15s ease-out, fadeInTransition 0.15s ease-in 0.15s;
+}
+
+/* Highlight animation for notes */
+.highlight-note {
+  box-shadow: 0 0 0 3px var(--accent-blue), 0 0 20px rgba(59, 130, 246, 0.6) !important;
+  animation: pulseHighlight 1.5s ease-in-out;
+}
+
+@keyframes pulseHighlight {
+  0% { box-shadow: 0 0 0 3px var(--accent-blue), 0 0 20px rgba(59, 130, 246, 0.6); }
+  50% { box-shadow: 0 0 0 6px var(--accent-blue), 0 0 30px rgba(59, 130, 246, 0.8); }
+  100% { box-shadow: 0 0 0 3px var(--accent-blue), 0 0 20px rgba(59, 130, 246, 0.6); }
+}
+
+/* Prevent canvas movement during note dragging */
+.note-dragging {
+  cursor: grabbing !important;
+}
+
+.note-dragging .react-transform-component {
+  pointer-events: none !important;
+}
+
+.note-dragging .note {
+  pointer-events: auto !important;
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
+/* Prevent text selection during dragging */
+.note-dragging * {
+  user-select: none !important;
+}
+
+/* Hide the tabs in the right panel */
+.tabs.h-full.flex.flex-col {
+  flex-direction: column;
+  /* Remove any border that visually separates the tabs */
+  border: none !important;
+}
+
+.tabs.h-full.flex.flex-col > .border-b.border-border-light.px-2 {
+  display: none !important;
+}
+
+.tabs-list.grid.grid-cols-3 {
+  display: none !important;
+}
+
+/* Ensure the content takes full height */
+.tabs-content.flex-1.overflow-auto {
+  height: 100% !important;
+}
+
+/* Make sure the search and sort components have good spacing */
+.tabs-content .p-4 {
+  padding: 1rem;
 }

@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useState, useRef, useMemo } from 'react';
-import { Note as NoteType, Position, Task } from '../types';
-import { Note } from './Note';
-import { Plus, Mic, Minus, Loader2, ListTodo, Settings as SettingsIcon, X, Layout, FileText, FolderOpen, UploadCloud, Book, FilePlus, Search, ChevronRight, ChevronLeft, AlignLeft, AlignCenter, AlignRight, Clipboard, Calendar, BrainCircuit, CheckSquare, Grid, Move, ArrowDown, ArrowRight } from 'lucide-react';
+import { Note as NoteType, Position, Task, PriorityLevel } from '../types';
+import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
+import { Note } from './Note/index';
+// Import types from Note component
+import { NoteType as NoteComponentType } from './Note/types';
+import { Plus, Mic, Minus, Loader2, ListTodo, Settings as SettingsIcon, X, Layout, FileText, FolderOpen, UploadCloud, Book, FilePlus, Search, ChevronRight, ChevronLeft, AlignLeft, AlignCenter, AlignRight, Clipboard, Calendar, BrainCircuit, CheckSquare, Grid, Move, ArrowDown, ArrowRight, Flag, SlidersHorizontal, Trello, CheckCircle, Maximize2 } from 'lucide-react';
 import { DndProvider } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { Switch } from './ui/switch';
@@ -9,13 +12,26 @@ import { Label } from './ui/label';
 import { Settings } from './Settings';
 import { useNoteStore } from '../store/noteStore';
 import { useDiscardStore } from '../store/discardStore';
-import { categorizeTasksAndSuggestNotes, extractKeyTerms, transcribeAudio, transcribeAudioWithKeyTerms, enhanceTranscribedText } from '../lib/ai';
+import { 
+  categorizeTasksAndSuggestNotes, 
+  extractKeyTerms,
+  enhanceTranscribedText, 
+  transcribeAudio,
+  transcribeAudioWithKeyTerms,
+  cleanGroceryItemText
+} from '../lib/ai';
 import { openai } from '../lib/openai';
-import SidePanel from './SidePanel';
 import CanvasGrid, { GridLayout, GridCell } from './CanvasGrid';
 import { AlignmentTool } from './AlignmentTool';
-import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { MarkdownImporter } from './MarkdownImporter';
+import { SmartOrganizeTool } from './SmartOrganizeTool.tsx';
+import { CanvasSettingsModal } from './CanvasSettingsModal';
+import FilteringPanel, { FilterOptions, SortOption } from './FilteringPanel';
+import KanbanBoard from './KanbanBoard';
+import NoteAlignmentPanel from './NoteAlignmentPanel';
+
+// Define GridLayout type explicitly to avoid conflicts
+type GridLayoutType = 'auto' | 'manual' | 'none';
 
 // Simple replacement for useResizeObserver
 function useSimpleResizeObserver() {
@@ -64,15 +80,15 @@ const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 2;
 
 // Define bounded canvas dimensions with 16:9 aspect ratio
-const INITIAL_CANVAS_WIDTH = 4000;
-const INITIAL_CANVAS_HEIGHT = 2250; // 16:9 aspect ratio
-const CANVAS_EXPAND_SIZE = 1000; // Size to expand canvas when needed
+const INITIAL_CANVAS_WIDTH = 12000;
+const INITIAL_CANVAS_HEIGHT = 6750; // 16:9 aspect ratio
+const CANVAS_EXPAND_SIZE = 3000; // Size to expand canvas when needed
 
 interface CanvasProps {
   onSwitchToNotes: () => void;
 }
 
-export function Canvas({ onSwitchToNotes }: CanvasProps) {
+export const Canvas: React.FC<CanvasProps> = ({ onSwitchToNotes }) => {
   const { notes, addNote, moveNote, updateNote, addTask, settings, setNotes } = useNoteStore();
   const [isRecording, setIsRecording] = useState(false);
   const [lastCtrlPress, setLastCtrlPress] = useState(0);
@@ -81,19 +97,63 @@ export function Canvas({ onSwitchToNotes }: CanvasProps) {
   const [realtimeTranscript, setRealtimeTranscript] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStatus, setProcessingStatus] = useState('');
+  const [showGrid, setShowGrid] = useState(true);
+  const [showDictationPanel, setShowDictationPanel] = useState(false); // State to control dictation panel visibility
+  
+  // Add Kanban board state
+  const [viewMode, setViewMode] = useState<'canvas' | 'kanban'>('canvas');
+  const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+  
+  // Add new state for filtering and sorting
+  const [filters, setFilters] = useState<FilterOptions>({
+    searchTerm: '',
+    categories: [],
+    priorities: [],
+    hasTasks: null,
+    dueDateStatus: 'all'
+  });
+  const [sortOption, setSortOption] = useState<SortOption>({
+    field: 'updated',
+    direction: 'desc'
+  });
+  const [filteredNotes, setFilteredNotes] = useState<NoteType[]>([]);
+  const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [showAlignmentPanel, setShowAlignmentPanel] = useState(false);
+  const [selectedNotes, setSelectedNotes] = useState<string[]>([]);
+  
+  // Extract all unique categories and priorities from notes
+  const availableCategories = useMemo(() => {
+    const categories = new Set<string>();
+    
+    notes.forEach(note => {
+      // Add note category if it exists
+      if (note.category) {
+        categories.add(note.category);
+      }
+      
+      // Add task categories if they exist
+      if (note.tasks) {
+        note.tasks.forEach(task => {
+          if (task.category) {
+            categories.add(task.category);
+          }
+        });
+      }
+    });
+    
+    return Array.from(categories);
+  }, [notes]);
+  
+  const availablePriorities: PriorityLevel[] = ['low', 'medium', 'high'];
 
   const colors = ['blue', 'green', 'pink', 'yellow'];
 
   // Add a new state to track when we receive chunks of audio data
   const [audioChunks, setAudioChunks] = useState<BlobPart[]>([]);
 
-  // Add a test mode to force the dictation panel to display
-  const [testMode, setTestMode] = useState(false);
-
   // Add a state for the alignment tool
   const [isAlignmentOpen, setIsAlignmentOpen] = useState(false);
   const [isSelectMode, setIsSelectMode] = useState(false);
-  const [selectedNotes, setSelectedNotes] = useState<string[]>([]);
 
   // Add new state variables for dictation preview and approval
   const [previewNotes, setPreviewNotes] = useState<NoteType[]>([]);
@@ -103,13 +163,10 @@ export function Canvas({ onSwitchToNotes }: CanvasProps) {
   // Add these references at the top under the state declarations
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const viewportRef = useRef<any>(null);
 
   // Add state for the Markdown importer modal
   const [isMarkdownImporterOpen, setIsMarkdownImporterOpen] = useState(false);
-
-  // Add to your component state
-  const [hiddenNotes, setHiddenNotes] = useState<string[]>([]);
-  const [showSidePanel, setShowSidePanel] = useState<boolean>(true);
 
   // Add a visible state for real-time transcription
   const [visibleTranscript, setVisibleTranscript] = useState('');
@@ -122,6 +179,7 @@ export function Canvas({ onSwitchToNotes }: CanvasProps) {
   const [isLoadingBrainstorm, setIsLoadingBrainstorm] = useState(false);
   const [brainstormSuggestions, setBrainstormSuggestions] = useState<{id: string, type: string, text: string}[]>([]);
   const [selectedSuggestions, setSelectedSuggestions] = useState<Array<{ id: string; type: string; text: string }>>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
   // Toggle AI reasoning visibility
   const toggleAIReasoning = () => {
@@ -140,9 +198,9 @@ export function Canvas({ onSwitchToNotes }: CanvasProps) {
     }
     setLastBrainstormClick(now);
     
-    // Check if we're already brainstorming
+    // Check if we're already brainstorming this note
     if (brainstormNote) {
-      console.log('Already brainstorming, cannot start another session');
+      console.log('Already brainstorming this note, ignoring duplicate request');
       return;
     }
     
@@ -362,7 +420,7 @@ Return 5-8 suggestions focused on being immediately useful to the user.`;
     console.log('Applying suggestion:', suggestion);
     
     if (!brainstormNote) {
-      console.error('No brainstorm note to apply suggestion to');
+      console.error('No brainstorm note available');
       return;
     }
     
@@ -375,21 +433,23 @@ Return 5-8 suggestions focused on being immediately useful to the user.`;
     
     switch (suggestion.type) {
       case 'task': {
-        // Add a new task to the note
-        if (!Array.isArray(originalNote.tasks)) {
+        // Initialize tasks array if it doesn't exist
+        if (!originalNote.tasks) {
           originalNote.tasks = [];
         }
         
-        const newTask = {
+        // Create a new task
+        const newTask: Task = {
           id: `task-${Date.now()}-${originalNote.tasks.length}`,
           text: suggestion.text,
           done: false,
           createdAt: new Date().toISOString(),
-          category: originalNote.aiSuggestions?.category || 'General'
+          updatedAt: new Date().toISOString(),
+          category: 'General' // Use a string directly
         };
         
         originalNote.tasks.push(newTask);
-        console.log('Added new task:', newTask);
+        console.log('Added task to note');
         break;
       }
       
@@ -433,13 +493,14 @@ Return 5-8 suggestions focused on being immediately useful to the user.`;
           originalNote.tasks = [];
         }
         
-        const newTask = {
+        const newTask: Task = {
           id: `task-${Date.now()}-${originalNote.tasks.length}`,
           text: suggestion.text,
           done: false,
           createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
           category: 'Schedule',
-          due: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // Set due date for tomorrow
+          dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() // Set due date for tomorrow
         };
         
         originalNote.tasks.push(newTask);
@@ -522,12 +583,20 @@ Return 5-8 suggestions focused on being immediately useful to the user.`;
   const noteSelectorRef = useRef<HTMLDivElement>(null);
 
   // Add state for mini map
-  const [miniMapViewport, setMiniMapViewport] = useState({ x: 0, y: 0, width: 100, height: 100 });
+  const [miniMapViewport, setMiniMapViewport] = useState({ x: 0, y: 0, width: 0, height: 0 });
 
   // Add new state for canvas dimensions
   const [canvasWidth, setCanvasWidth] = useState(INITIAL_CANVAS_WIDTH);
   const [canvasHeight, setCanvasHeight] = useState(INITIAL_CANVAS_HEIGHT);
   const [showCanvasBoundaries, setShowCanvasBoundaries] = useState(true);
+
+  // Add missing grid-related state variables
+  const [gridVisible, setGridVisible] = useState(true);
+  const [gridLayout, setGridLayout] = useState<GridLayoutType>('auto');
+  const [columns, setColumns] = useState(4);
+  const [rows, setRows] = useState(4);
+  const [gridCells, setGridCells] = useState<any[]>([]);
+  const [activeCell, setActiveCell] = useState<string | null>(null);
 
   // Toggle note selection
   const toggleNoteSelection = (noteId: string) => {
@@ -553,52 +622,59 @@ Return 5-8 suggestions focused on being immediately useful to the user.`;
   // Fix the handleRealTimeTranscription function
   const handleRealTimeTranscription = async (chunks: BlobPart[]) => {
     // Skip if we don't have enough audio data yet
-    if (chunks.length < 2) return;
+    if (chunks.length < 2) {
+      setDictationStatus('idle');
+      return;
+    }
     
     try {
       // Create an audio blob from the chunks
       const audioBlob = new Blob(chunks, { type: 'audio/webm' });
       
-      // Actually perform real-time transcription with the current audio chunk
-      // instead of just simulating with random phrases
-      try {
-        const formData = new FormData();
-        formData.append('audio', audioBlob, 'audio.webm');
-        
-        // Use Deepgram for real-time chunk transcription
-        const arrayBuffer = await audioBlob.arrayBuffer();
-        const response = await fetch('https://api.deepgram.com/v1/listen?model=nova-3&interim_results=true', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Token ${import.meta.env.VITE_DEEPGRAM_API_KEY}`,
-            'Content-Type': 'audio/webm',
-          },
-          body: arrayBuffer,
-        });
-        
-        if (response.ok) {
-          const result = await response.json();
-          const transcript = result.results?.channels[0]?.alternatives[0]?.transcript || '';
-          
-          if (transcript) {
-            setVisibleTranscript(prev => {
-              // Only add new content that isn't already in the transcript
-              if (!prev.includes(transcript)) {
-                return prev + " " + transcript;
-              }
-              return prev;
-            });
-          }
-        }
-      } catch (transcriptionError) {
-        console.error('Error transcribing chunk:', transcriptionError);
+      // Make sure we have enough data
+      if (audioBlob.size < 1000) {
+        console.warn('Audio blob is too small, waiting for more data');
+        return;
       }
       
-      // Show the user that transcription is happening by updating the UI immediately
-      setDictationStatus('listening');
+      // First show the user that something is happening
+      setDictationStatus('processing');
+      setProcessingStatus('Transcribing your recording...');
       
+      // Perform full transcription on the complete audio
+      try {
+        // Extract key terms from notes for improved transcription accuracy
+        const keyTerms = notes
+          .filter(note => note.content && typeof note.content === 'string')
+          .map(note => note.content as string);
+          
+        // Use our AI library transcription with key terms for better accuracy
+        console.log('Sending audio blob to transcription API, size:', audioBlob.size);
+        const transcript = await transcribeAudioWithKeyTerms(audioBlob, keyTerms);
+        
+        if (transcript) {
+          console.log("Final transcript:", transcript);
+          setVisibleTranscript(transcript);
+          
+          // Perform the full smart processing of the dictation
+          setProcessingStatus('Processing content...');
+          await processDictationTranscript(transcript);
+          // Set dictation status to previewing to show results
+          setDictationStatus('previewing');
+        } else {
+          console.error('Empty transcript returned');
+          setDictationStatus('idle');
+          setIsProcessing(false);
+        }
+      } catch (transcriptionError) {
+        console.error('Error with full transcription:', transcriptionError);
+        setDictationStatus('idle');
+        setIsProcessing(false);
+      }
     } catch (error) {
       console.error('Error during real-time transcription:', error);
+      setDictationStatus('idle');
+      setIsProcessing(false);
     }
   };
 
@@ -662,18 +738,22 @@ Return 5-8 suggestions focused on being immediately useful to the user.`;
         console.log('Web Speech API recognition started');
       } else {
         console.warn('Speech Recognition API not available in this browser');
-        // Fall back to chunk-based approach
+        // Fall back to chunk-based approach using real audio chunks
         const intervalId = setInterval(() => {
-          handleRealTimeTranscription(audioChunks);
+          if (audioChunks.length > 0) {
+            handleRealTimeTranscription(audioChunks);
+          }
         }, 1000);
         
         return () => clearInterval(intervalId);
       }
     } catch (error) {
       console.error('Error initializing speech recognition:', error);
-      // Fall back to chunk-based approach
+      // Fall back to chunk-based approach using real audio chunks
       const intervalId = setInterval(() => {
-        handleRealTimeTranscription(audioChunks);
+        if (audioChunks.length > 0) {
+          handleRealTimeTranscription(audioChunks);
+        }
       }, 1000);
       
       return () => clearInterval(intervalId);
@@ -705,11 +785,21 @@ Return 5-8 suggestions focused on being immediately useful to the user.`;
         }
         setLastCtrlPress(now);
       }
+      
+      // Add keyboard shortcut for voice dictation (Cmd+D or Ctrl+D)
+      if ((e.metaKey || e.ctrlKey) && e.key === 'd') {
+        e.preventDefault();
+        if (isRecording) {
+          stopRecording();
+        } else {
+          startRecording();
+        }
+      }
     };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [lastCtrlPress, isRecording]);
+    
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isRecording]); // Add isRecording to the dependencies
 
   // Note type handling
   const handleAddNoteWithType = (type: string) => {
@@ -742,7 +832,9 @@ Return 5-8 suggestions focused on being immediately useful to the user.`;
       tasks: [],
       type: noteType,
       color: typeColors[type as keyof typeof typeColors] || colors[Math.floor(Math.random() * colors.length)],
-      expanded: true // Ensure expanded is true
+      expanded: true, // Ensure expanded is true
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     };
     
     // Use addNote from the store which preserves the expanded property
@@ -773,24 +865,49 @@ Return 5-8 suggestions focused on being immediately useful to the user.`;
   };
 
   const handleNoteMove = useCallback((id: string, newPosition: Position) => {
-    // Ensure the note stays within reasonable bounds
-    const boundedPosition = {
-      x: Math.max(-500, Math.min(newPosition.x, 9500)),
-      y: Math.max(-500, Math.min(newPosition.y, 9500)),
-    };
+    // Get the grid size from the CSS
+    const GRID_SIZE = 100; // Main grid size
+    const FINE_GRID_SIZE = 20; // Fine grid size
+    
+    // Snap to grid if grid is visible
+    let snappedPosition = { ...newPosition };
+    
+    if (showGrid) {
+      // Snap to the fine grid by default
+      snappedPosition = {
+        x: Math.round(newPosition.x / FINE_GRID_SIZE) * FINE_GRID_SIZE,
+        y: Math.round(newPosition.y / FINE_GRID_SIZE) * FINE_GRID_SIZE
+      };
+      
+      // If shift key is pressed, snap to the main grid
+      if (window.event && (window.event as KeyboardEvent).shiftKey) {
+        snappedPosition = {
+          x: Math.round(newPosition.x / GRID_SIZE) * GRID_SIZE,
+          y: Math.round(newPosition.y / GRID_SIZE) * GRID_SIZE
+        };
+      }
+    }
+    
+    // No need to bound position since we're using an infinite canvas
     
     // Use a direct update instead of going through state if possible
     const noteElement = document.querySelector(`[data-note-id="${id}"]`) as HTMLDivElement | null;
     if (noteElement) {
       // Apply the transform directly for smoother animations during drag
-      noteElement.style.transform = `translate3d(${boundedPosition.x}px, ${boundedPosition.y}px, 0)`;
+      noteElement.style.transform = `translate3d(${snappedPosition.x}px, ${snappedPosition.y}px, 0)`;
+      
+      // Add snapping class for animation
+      noteElement.classList.add('snapping');
+      setTimeout(() => {
+        noteElement.classList.remove('snapping');
+      }, 200);
     }
     
     // Still update the state for persistence, but with a small delay to prevent stuttering
     requestAnimationFrame(() => {
-      moveNote(id, boundedPosition);
+      moveNote(id, snappedPosition);
     });
-  }, [moveNote]);
+  }, [moveNote, showGrid]);
 
   const handleContentChange = useCallback((id: string, content: string) => {
     updateNote(id, { content });
@@ -834,628 +951,120 @@ Return 5-8 suggestions focused on being immediately useful to the user.`;
     }
   };
 
-  // Modify the categorization flow to preview instead of direct creation
+  // Modify the processDictationTranscript function to fix type issues
   const processDictationTranscript = async (text: string) => {
-    setProcessingStatus('Analyzing transcript...');
-    console.log('Processing transcript:', text.substring(0, 50) + '...');
-    
-    // Show processing feedback to the user
-    setIsProcessing(true);
-    setDictationStatus('processing');
-    
-    // Store the transcript so it's visible during processing
-    setVisibleTranscript(text);
-    
-    const previewNotesList: NoteType[] = [];
+    if (!text || text.trim().length === 0) {
+      console.log('Empty transcript, nothing to process');
+      setDictationStatus('idle');
+      setIsProcessing(false);
+      return;
+    }
     
     try {
-      // First, use AI to categorize tasks and suggest note groups
-      setProcessingStatus('Categorizing tasks and identifying note groups...');
+      setIsProcessing(true);
+      setProcessingStatus('Analyzing voice transcript...');
+      console.log('Processing transcript of length:', text.length);
       
-      const categorizedResult = await categorizeTasksAndSuggestNotes(text);
-      console.log('Categorization result:', 
-        `${categorizedResult.noteGroups.length} groups, ${categorizedResult.tasks.length} tasks`);
+      // Use the real AI categorization system from our library
+      setProcessingStatus('Identifying tasks and categories...');
+      console.log('Calling categorizeTasksAndSuggestNotes API...');
       
-      // Create a preview note for each note group
-      setProcessingStatus(`Creating ${categorizedResult.noteGroups.length} categorized note previews...`);
+      const result = await categorizeTasksAndSuggestNotes(text);
+      console.log('AI categorization complete:', result.noteGroups?.length || 0, 'note groups');
       
-      for (let groupIndex = 0; groupIndex < categorizedResult.noteGroups.length; groupIndex++) {
-        const group = categorizedResult.noteGroups[groupIndex];
-        
-        // Get the tasks for this group
-        const groupTasks = group.taskIndices.map(index => {
-          const task = categorizedResult.tasks[index];
-          return {
-            id: `task-${Date.now()}-${index}`,
-            text: task.text,
-            done: false,
-            category: task.category || 'general'
-          };
-        });
-        
-        // Create position with slight offset for each note
-        const position: Position = {
-          x: (window.innerWidth / 2) - 150 + (groupIndex * 50), 
-          y: (window.innerHeight / 2) - 100 + (groupIndex * 50)
-        };
-        
-        // Determine the note color based on category if possible
-        const categoryName = group.category.toLowerCase();
-        const noteColor = 
-          categoryName.includes('work') ? 'blue' : 
-          categoryName.includes('personal') ? 'green' :
-          categoryName.includes('health') || categoryName.includes('fitness') ? 'pink' :
-          categoryName.includes('shop') ? 'yellow' :
-          colors[Math.floor(Math.random() * colors.length)];
-        
-        // Create the note
-        const newNote: NoteType = {
-          id: `preview-${groupIndex}-${Date.now()}`,
-          content: group.title || `${group.category} Tasks`,
-          type: 'task',
-          color: noteColor,
-          position,
-          tasks: groupTasks,
-          aiSuggestions: {
-            reasoning: categorizedResult.reasoning,
-            category: group.category,
-            taskCount: groupTasks.length
-          }
-        };
-        
-        previewNotesList.push(newNote);
-      }
+      // Create a list to store our new notes
+      const previewNotesList: NoteType[] = [];
       
-      // If we didn't find any task groups, create a simple note from text segments
-      if (previewNotesList.length === 0) {
-        setProcessingStatus('Creating notes from text segments...');
-        const textSegments = await identifyTopics(text);
-        
-        for (let i = 0; i < textSegments.length; i++) {
-          const segment = textSegments[i];
+      // Process the note groups suggested by the AI
+      if (result.noteGroups && result.noteGroups.length > 0) {
+        // Create a note for each suggested group
+        result.noteGroups.forEach((group, index) => {
+          const now = new Date().toISOString();
+          const groupTasks = group.taskIndices.map(idx => result.tasks[idx]);
           
-          // Generate a meaningful title from the first line
-          let title = segment.split(/[.!?]/)[0].slice(0, 30).trim();
-          if (!title) {
-            title = 'New Note';
-          }
-          
-          // Create position with slight offset for each note
-          const position: Position = {
-            x: (window.innerWidth / 2) - 150 + (i * 30), 
-            y: (window.innerHeight / 2) - 100 + (i * 30)
-          };
-          
-          // Create the note 
+          // Ensure we create the object with the correct type structure
           const newNote: NoteType = {
-            id: `preview-${i}-${Date.now()}`,
-            content: `${title}\n\n${segment}`,
-            type: 'sticky',
+            id: `note-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            type: 'sticky', 
+            content: `${group.title}\n\n${text}`,
+            position: {
+              x: (window.innerWidth / 2) - 150 + (index * 30),
+              y: (window.innerHeight / 2) - 100 + (index * 30)
+            },
             color: colors[Math.floor(Math.random() * colors.length)],
-            position,
-            tasks: []
+            category: group.category,
+            tasks: groupTasks.map(task => ({
+              id: task.id || `task-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              text: task.text,
+              done: task.done || false,
+              category: task.category,
+              createdAt: now,
+              updatedAt: now
+            })),
+            isVoiceNote: true, // Mark this as created from voice dictation
+            createdAt: now,
+            updatedAt: now
           };
           
           previewNotesList.push(newNote);
-        }
-      }
-      
-      // Final processing status before showing preview
-      setProcessingStatus('Preparing preview of your notes...');
-      
-      // Give a slight delay so the user can see the final processing status
-      setTimeout(() => {
-        // Update state for preview
-        setPreviewNotes(previewNotesList);
-        setShowPreview(true);
-        setDictationStatus('previewing');
-        setIsProcessing(false);
-        
-        console.log('Preview notes ready:', previewNotesList.length);
-      }, 500);
-      
-    } catch (error) {
-      console.error('Error processing dictation:', error);
-      // Create a single fallback note with the raw transcript
-      const fallbackNote: NoteType = {
-        id: `preview-fallback-${Date.now()}`,
-        content: `Dictated Note\n\n${text}`,
-        type: 'sticky',
-        color: colors[Math.floor(Math.random() * colors.length)],
-        position: {
-          x: (window.innerWidth / 2) - 150,
-          y: (window.innerHeight / 2) - 100
-        },
-        tasks: []
-      };
-      
-      setPreviewNotes([fallbackNote]);
-      setShowPreview(true);
-      setDictationStatus('previewing');
-      setIsProcessing(false);
-      
-      console.log('Created fallback note due to processing error');
-    }
-  };
-
-  // Fix the startRecording function to immediately show feedback
-  const startRecording = async () => {
-    try {
-      console.log('Starting recording...');
-      
-      // Clear any previous transcript and set recording state IMMEDIATELY
-      // This is crucial - set all UI states before any async operations
-      setIsRecording(true);
-      setDictationStatus('listening');
-      setVisibleTranscript('');
-      setAudioChunks([]);
-      
-      // Force the dictation panel to be visible with a timeout
-      document.body.classList.add('recording-active');
-      
-      // Provide immediate feedback that recording is starting
-      setVisibleTranscript("Initializing dictation system...");
-      
-      try {
-        // Request microphone access
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        console.log('Microphone access granted:', stream);
-        mediaStreamRef.current = stream;
-        
-        // Setup media recorder for the final audio processing
-        const recorder = new MediaRecorder(stream);
-        mediaRecorderRef.current = recorder;
-        console.log('MediaRecorder created:', recorder);
-        
-        const chunks: BlobPart[] = [];
-        
-        recorder.ondataavailable = (e) => {
-          console.log('Audio data available:', e.data.size, 'bytes');
-          if (e.data.size > 0) {
-            chunks.push(e.data);
-            setAudioChunks(prevChunks => [...prevChunks, e.data]);
-          }
-        };
-        
-        recorder.onstart = () => {
-          console.log('MediaRecorder started');
-          // Update UI to show we're actively recording
-          setVisibleTranscript("Dictation active. Start speaking...");
-        };
-        
-        recorder.onerror = (event) => {
-          console.error('MediaRecorder error:', event);
-        };
-        
-        recorder.onstop = async () => {
-          console.log('MediaRecorder onstop event triggered');
-          setIsProcessing(true);
-          setDictationStatus('processing');
-          setProcessingStatus('Transcribing audio...');
-          
-          const audioBlob = new Blob(chunks, { type: 'audio/webm' });
-          console.log('Audio blob created:', audioBlob.size, 'bytes');
-          
-          try {
-            // Get all note content to extract key terms
-            const allNoteContents = notes.map(note => typeof note.content === 'string' ? note.content : '');
-            
-            // Extract key terms from existing notes to improve transcription accuracy
-            setProcessingStatus('Analyzing existing notes for key terms...');
-            const keyTerms = await extractKeyTerms(allNoteContents);
-            
-            // Use enhanced transcription with key terms for better accuracy
-            setProcessingStatus('Transcribing audio with enhanced accuracy...');
-            const text = keyTerms.length > 0 
-              ? await transcribeAudioWithKeyTerms(audioBlob, keyTerms)
-              : await transcribeAudio(audioBlob);
-            
-            // Use OpenAI to enhance the text quality and make it more natural
-            setProcessingStatus('Enhancing transcription to sound more natural...');
-            const enhancedText = await enhanceTranscribedText(text);
-            
-            console.log('Transcription complete:', enhancedText.substring(0, 50) + '...');
-            
-            // Process the enhanced transcript for preview
-            await processDictationTranscript(enhancedText);
-          } catch (error) {
-            console.error('Error processing recording:', error);
-            setIsProcessing(false);
-            setIsRecording(false);
-            setDictationStatus('idle');
-            console.log('Error processing your recording. Please try again.');
-          }
-        };
-        
-        console.log('Starting MediaRecorder...');
-        recorder.start(1000); // Capture audio in 1-second chunks
-        console.log('MediaRecorder started');
-        
-      } catch (micError: any) {
-        console.error('Error accessing microphone:', micError);
-        console.log(`Could not access microphone: ${micError.message || 'Unknown error'}`);
-        setIsRecording(false);
-        setDictationStatus('idle');
-        document.body.classList.remove('recording-active');
-      }
-    } catch (error) {
-      console.error('Error in startRecording:', error);
-      setIsRecording(false);
-      setDictationStatus('idle');
-      document.body.classList.remove('recording-active');
-      console.log('Could not start recording. Please check permissions and try again.');
-    }
-  };
-
-  // Update the stopRecording function to ensure the recording state is properly cleaned up
-  const stopRecording = () => {
-    console.log('stopRecording called, current refs:', { 
-      mediaRecorderRef: mediaRecorderRef.current, 
-      mediaStreamRef: mediaStreamRef.current
-    });
-    
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      try {
-        console.log('Stopping MediaRecorder...');
-        mediaRecorderRef.current.stop();
-        console.log('MediaRecorder stopped');
-        
-        // Stop all tracks in the stream
-        if (mediaStreamRef.current) {
-          console.log('Stopping media stream tracks...');
-          mediaStreamRef.current.getTracks().forEach(track => {
-            track.stop();
-            console.log('Track stopped:', track.kind);
-          });
-        }
-        
-        // Don't reset recording state here as we want to show the preview
-        // setIsRecording will happen after preview approval/rejection
-      } catch (error) {
-        console.error('Error stopping recorder:', error);
-        setIsRecording(false);
-        setDictationStatus('idle');
-        document.body.classList.remove('recording-active');
-      }
-    } else {
-      console.log('MediaRecorder not available or already inactive');
-      setIsRecording(false);
-      setDictationStatus('idle');
-      document.body.classList.remove('recording-active');
-    }
-  };
-
-  // Update the clearPreview function to properly clean up
-  const clearPreview = () => {
-    console.log('Clearing preview and resetting recording state');
-    setPreviewNotes([]);
-    setShowPreview(false);
-    setIsRecording(false);
-    setDictationStatus('idle');
-    document.body.classList.remove('recording-active');
-    
-    // Clean up references
-    mediaRecorderRef.current = null;
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => track.stop());
-      mediaStreamRef.current = null;
-    }
-  };
-
-  // Improved approveNotes for better logging 
-  const approveNotes = () => {
-    console.log('Approving notes:', previewNotes.length);
-    previewNotes.forEach(note => {
-      console.log('Adding note:', note.type, 'with tasks:', note.tasks?.length || 0);
-      addNote(note);
-    });
-    clearPreview();
-  };
-
-  // Add function to toggle note visibility
-  const toggleNoteVisibility = (id: string) => {
-    setHiddenNotes(prev => {
-      if (prev.includes(id)) {
-        return prev.filter(noteId => noteId !== id);
+        });
       } else {
-        return [...prev, id];
+        // If AI couldn't categorize, create a single note with the full text
+        const now = new Date().toISOString();
+        const newNote: NoteType = {
+          id: `note-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          type: 'sticky',
+          content: text,
+          position: {
+            x: (window.innerWidth / 2) - 150,
+            y: (window.innerHeight / 2) - 100
+          },
+          color: colors[Math.floor(Math.random() * colors.length)],
+          isVoiceNote: true,
+          createdAt: now,
+          updatedAt: now
+        };
+        previewNotesList.push(newNote);
       }
-    });
-  };
-
-  // Update the openNote function
-  const openNote = (id: string) => {
-    const note = notes.find(n => n.id === id);
-    if (note && hiddenNotes.includes(id)) {
-      // Unhide the note first if needed
-      toggleNoteVisibility(id);
-    }
-    
-    // Find the note element using the data attribute
-    const noteElement = document.querySelector(`[data-note-id="note-${id}"]`);
-    if (noteElement) {
-      // Scroll to the note with a small animation
-      noteElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
       
-      // Flash the note briefly to highlight it
-      noteElement.classList.add('highlight-note');
-      setTimeout(() => {
-        noteElement.classList.remove('highlight-note');
-      }, 2000);
+      // Add the new notes to the canvas
+      console.log('Creating', previewNotesList.length, 'new notes from dictation');
+      const updatedNotes = [...notes, ...previewNotesList];
+      setNotes(updatedNotes);
+      
+      // Set status
+      setDictationStatus('idle');
+      setProcessingStatus('Processing complete!');
+      
+    } catch (error) {
+      console.error('Error processing dictation transcript:', error);
+      // Fallback to simpler processing if the AI categorization fails
+      createSimpleNoteFromText(text);
+    } finally {
+      setIsProcessing(false);
     }
-  };
-
-  // Add delete note function
-  const handleDeleteNote = (noteId: string) => {
-    // Use the existing notes state and update it
-    const updatedNotes = notes.filter(note => note.id !== noteId);
-    setNotes(updatedNotes);
   };
   
-  // Update the task update function to properly call the content change handler
-  const handleTaskUpdate = (noteId: string, taskId: string, updates: Partial<Task>) => {
-    // Find the note to update
-    const noteToUpdate = notes.find(note => note.id === noteId);
-    
-    if (!noteToUpdate || !noteToUpdate.tasks) return;
-    
-    // Update the specific task within this note
-    const updatedTasks = noteToUpdate.tasks.map(task => 
-      task.id === taskId ? { ...task, ...updates } : task
-    );
-    
-    // Create the updated note
-    const updatedNote = {
-      ...noteToUpdate,
-      tasks: updatedTasks
+  // Fallback function to create a simple note if AI processing fails
+  const createSimpleNoteFromText = (text: string) => {
+    const now = new Date().toISOString();
+    const newNote: NoteType = {
+      id: `note-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      type: 'sticky',
+      content: text,
+      position: {
+        x: (window.innerWidth / 2) - 150,
+        y: (window.innerHeight / 2) - 100
+      },
+      color: colors[Math.floor(Math.random() * colors.length)],
+      isVoiceNote: true,
+      createdAt: now,
+      updatedAt: now
     };
     
-    // Update the note in state
-    const updatedNotes = notes.map(note => 
-      note.id === noteId ? updatedNote : note
-    );
-    
-    // Update the state
+    const updatedNotes = [...notes, newNote];
     setNotes(updatedNotes);
-  };
-
-  // Check if notes is undefined or empty and provide a fallback
-  useEffect(() => {
-    // If notes are empty or undefined, we should create a default note
-    if (!notes || notes.length === 0) {
-      // Add a default note if none exist
-      const defaultNote: NoteType = {
-        id: crypto.randomUUID(),
-        type: 'sticky',
-        content: 'Welcome to Project Manager',
-        position: { x: window.innerWidth / 2 - 150, y: window.innerHeight / 2 - 100 },
-        color: 'blue',
-        tasks: [],
-        expanded: true
-      };
-      
-      // Add the default note using the store function
-      addNote(defaultNote);
-    }
-  }, [notes, addNote]);
-
-  // Function to update mini map viewport position
-  const updateMiniMapViewport = (transformState: any) => {
-    if (!transformState) return;
-    
-    const { scale, positionX, positionY } = transformState;
-    
-    // Calculate the visible portion of the canvas based on current window size and scale
-    const visibleWidthInCanvas = window.innerWidth / scale;
-    const visibleHeightInCanvas = window.innerHeight / scale;
-    
-    // The visible area starts at (-positionX / scale, -positionY / scale) in canvas coordinates
-    // and extends for (visibleWidth, visibleHeight)
-    const visibleLeft = -positionX / scale;
-    const visibleTop = -positionY / scale;
-    
-    // Calculate the percentage of the canvas that is visible
-    const viewportX = (visibleLeft / canvasWidth) * 100;
-    const viewportY = (visibleTop / canvasHeight) * 100;
-    const viewportWidth = (visibleWidthInCanvas / canvasWidth) * 100;
-    const viewportHeight = (visibleHeightInCanvas / canvasHeight) * 100;
-    
-    // Ensure viewport stays within bounds
-    setMiniMapViewport({
-      x: Math.max(0, Math.min(100 - viewportWidth, viewportX)),
-      y: Math.max(0, Math.min(100 - viewportHeight, viewportY)),
-      width: Math.min(100, viewportWidth),
-      height: Math.min(100, viewportHeight)
-    });
-  };
-
-  // Function to expand canvas in a specific direction
-  const expandCanvas = (direction: 'right' | 'bottom' | 'left' | 'top') => {
-    switch (direction) {
-      case 'right':
-        setCanvasWidth(prev => prev + CANVAS_EXPAND_SIZE);
-        break;
-      case 'bottom':
-        setCanvasHeight(prev => prev + CANVAS_EXPAND_SIZE);
-        break;
-      case 'left':
-        // For left expansion, we need to shift all notes to accommodate the new space
-        setCanvasWidth(prev => prev + CANVAS_EXPAND_SIZE);
-        notes.forEach(note => {
-          moveNote(note.id, { 
-            x: note.position.x + CANVAS_EXPAND_SIZE, 
-            y: note.position.y 
-          });
-        });
-        break;
-      case 'top':
-        // For top expansion, we need to shift all notes to accommodate the new space
-        setCanvasHeight(prev => prev + CANVAS_EXPAND_SIZE);
-        notes.forEach(note => {
-          moveNote(note.id, { 
-            x: note.position.x, 
-            y: note.position.y + CANVAS_EXPAND_SIZE 
-          });
-        });
-        break;
-    }
-  };
-  
-  // Check if any notes are near the canvas boundaries
-  useEffect(() => {
-    const BOUNDARY_THRESHOLD = 200; // pixels from edge to trigger warning
-    
-    const nearBoundary = notes.some(note => 
-      note.position.x < BOUNDARY_THRESHOLD || 
-      note.position.y < BOUNDARY_THRESHOLD ||
-      note.position.x > canvasWidth - BOUNDARY_THRESHOLD ||
-      note.position.y > canvasHeight - BOUNDARY_THRESHOLD
-    );
-    
-    if (nearBoundary) {
-      // Show visual indication that notes are near boundary
-      setShowCanvasBoundaries(true);
-    } else if (showCanvasBoundaries) {
-      // Hide boundaries after a delay if no notes are near
-      const timer = setTimeout(() => {
-        setShowCanvasBoundaries(false);
-      }, 5000);
-      
-      return () => clearTimeout(timer);
-    }
-  }, [notes, canvasWidth, canvasHeight, showCanvasBoundaries]);
-
-  // Grid state
-  const [gridLayout, setGridLayout] = useState<GridLayout>('none');
-  const [gridVisible, setGridVisible] = useState(false);
-  const [columns, setColumns] = useState(2);
-  const [rows, setRows] = useState(2);
-  const [gridCells, setGridCells] = useState<GridCell[]>([]);
-  const [activeCell, setActiveCell] = useState<string | null>(null);
-  
-  // Helper to get note dimensions based on canvas transform
-  const getNoteCanvasPosition = (note: NoteType) => {
-    return {
-      x: note.position.x,
-      y: note.position.y
-    };
-  };
-  
-  // Function to toggle grid visibility
-  const toggleGridVisibility = () => {
-    setGridVisible(!gridVisible);
-  };
-  
-  // Function to handle creating a grid cell
-  const handleCellCreate = (cell: GridCell) => {
-    // Avoid duplicating cells when recreating layouts
-    if (gridLayout !== 'custom') {
-      setGridCells(prevCells => {
-        // For predefined layouts, replace cells entirely
-        return [...prevCells.filter(c => !cell.id.includes(c.id)), cell];
-      });
-    } else {
-      setGridCells(prevCells => [...prevCells, cell]);
-    }
-  };
-  
-  // Function to handle updating a grid cell
-  const handleCellUpdate = (id: string, updates: Partial<GridCell>) => {
-    setGridCells(prevCells => 
-      prevCells.map(cell => cell.id === id ? { ...cell, ...updates } : cell)
-    );
-  };
-  
-  // Function to handle deleting a grid cell
-  const handleCellDelete = (id: string) => {
-    setGridCells(prevCells => prevCells.filter(cell => cell.id !== id));
-  };
-  
-  // Function to determine which cell a note belongs to
-  const getNoteCell = (note: NoteType): string | null => {
-    if (!gridVisible || gridLayout === 'none' || gridCells.length === 0) {
-      return null;
-    }
-    
-    const { x, y } = getNoteCanvasPosition(note);
-    
-    // Find the cell that contains this position
-    for (const cell of gridCells) {
-      if (
-        x >= cell.x && 
-        x <= cell.x + cell.width && 
-        y >= cell.y && 
-        y <= cell.y + cell.height
-      ) {
-        return cell.id;
-      }
-    }
-    
-    return null;
-  };
-  
-  // Find cell that a note belongs to
-  const organizeNotesByCell = () => {
-    const cellMap: Record<string, NoteType[]> = {};
-    
-    // Initialize with empty arrays for all cells
-    gridCells.forEach(cell => {
-      cellMap[cell.id] = [];
-    });
-    
-    // Group notes by their cells
-    notes.forEach(note => {
-      const cellId = getNoteCell(note);
-      if (cellId) {
-        if (!cellMap[cellId]) {
-          cellMap[cellId] = [];
-        }
-        cellMap[cellId].push(note);
-      }
-    });
-    
-    return cellMap;
-  };
-  
-  // Function to automatically arrange notes within cells
-  const arrangeNotesInCells = () => {
-    const cellMap = organizeNotesByCell();
-    const newNotes = [...notes];
-    
-    // For each cell, arrange its notes in a grid pattern
-    Object.entries(cellMap).forEach(([cellId, cellNotes]) => {
-      if (cellNotes.length === 0) return;
-      
-      const cell = gridCells.find(c => c.id === cellId);
-      if (!cell) return;
-      
-      // Arrange notes in the cell
-      const padding = 20;
-      const maxWidth = Math.max(...cellNotes.map(note => note.size?.width || 200));
-      const maxHeight = Math.max(...cellNotes.map(note => note.size?.height || 200));
-      
-      const cols = Math.floor((cell.width - padding) / (maxWidth + padding));
-      const rows = Math.ceil(cellNotes.length / Math.max(1, cols));
-      
-      cellNotes.forEach((note, index) => {
-        const col = index % cols;
-        const row = Math.floor(index / cols);
-        
-        const noteIndex = newNotes.findIndex(n => n.id === note.id);
-        if (noteIndex >= 0) {
-          newNotes[noteIndex] = {
-            ...newNotes[noteIndex],
-            position: {
-              ...newNotes[noteIndex].position,
-              x: cell.x + padding + col * (maxWidth + padding),
-              y: cell.y + padding + row * (maxHeight + padding)
-            }
-          };
-        }
-      });
-    });
-    
-    setNotes(newNotes);
+    console.log('Created simple note as fallback:', newNote);
   };
 
   // Add a new function to handle brainstorming for any note
@@ -1513,751 +1122,1133 @@ Return 5-8 suggestions focused on being immediately useful to the user.`;
     console.log(`Distributing selected notes: ${distribution}`);
   };
 
+  // Add state for the smart organize tool
+  const [isSmartOrganizeOpen, setIsSmartOrganizeOpen] = useState(false);
+  const [organizeStyle, setOrganizeStyle] = useState('by-grid');
+
+  // New function for smart organization
+  const smartOrganizeNotes = async (style: string) => {
+    // Exit if there are no notes to organize
+    if (!notes || notes.length === 0) return;
+    
+    setOrganizeStyle(style);
+    
+    try {
+      // Only show the loading state if we're using the AI
+      if (style === 'by-ai') {
+        setIsLoading(true);
+      }
+      
+      let organizedNotes: NoteType[] = [...notes];
+      
+      if (style === 'by-grid') {
+        // Simply arrange notes in the existing grid cells
+        arrangeNotesInCells();
+        return;
+      }
+      else if (style === 'by-category') {
+        // Group notes by their main category (use most frequent task category)
+        const notesByCategory: {[key: string]: NoteType[]} = {};
+        
+        // Group notes by detected categories
+        notes.forEach(note => {
+          // Count categories in tasks
+          const categoryCounts: {[key: string]: number} = {};
+          note.tasks?.forEach(task => {
+            const category = task.category || 'Uncategorized';
+            categoryCounts[category] = (categoryCounts[category] || 0) + 1;
+          });
+          
+          // Find the most common category
+          let mainCategory = 'Uncategorized';
+          let maxCount = 0;
+          
+          Object.entries(categoryCounts).forEach(([category, count]) => {
+            if (count > maxCount) {
+              maxCount = count;
+              mainCategory = category;
+            }
+          });
+          
+          // Add note to the category group
+          if (!notesByCategory[mainCategory]) {
+            notesByCategory[mainCategory] = [];
+          }
+          notesByCategory[mainCategory].push(note);
+        });
+        
+        // Calculate positions for each category group
+        const categorySpacing = 400;
+        const NOTES_PER_ROW = 3;
+        const NOTE_SPACING = 50;
+        const NOTE_WIDTH = 300;
+        const NOTE_HEIGHT = 250;
+        
+        let categoryIndex = 0;
+        
+        // Position notes by category
+        Object.entries(notesByCategory).forEach(([category, categoryNotes]) => {
+          const categoryX = 100;
+          const categoryY = 100 + (categoryIndex * categorySpacing);
+          
+          // Position notes in a grid within their category
+          categoryNotes.forEach((note, i) => {
+            const row = Math.floor(i / NOTES_PER_ROW);
+            const col = i % NOTES_PER_ROW;
+            
+            const x = categoryX + (col * (NOTE_WIDTH + NOTE_SPACING));
+            const y = categoryY + (row * (NOTE_HEIGHT + NOTE_SPACING));
+            
+            // Update note position
+            const idx = organizedNotes.findIndex(n => n.id === note.id);
+            if (idx !== -1) {
+              organizedNotes[idx] = {
+                ...organizedNotes[idx],
+                position: { x, y }
+              };
+            }
+          });
+          
+          categoryIndex++;
+        });
+        
+        // Update all notes with their new positions
+        setNotes(organizedNotes);
+      }
+      else if (style === 'by-ai') {
+        // Use OpenAI to analyze and organize notes by context
+        const noteContents = notes.map(note => {
+          const taskTexts = note.tasks?.map(task => task.text).join('\n') || '';
+          // Use optional content property
+          return `Content: ${note.content || ''}\nTasks: ${taskTexts}`;
+        });
+        
+        // Call the API to categorize and organize notes
+        const completion = await openai.chat.completions.create({
+          messages: [
+            {
+              role: 'system',
+              content: `Analyze the following notes and organize them into logical groups. 
+              Create a layout where related notes are positioned near each other.
+              
+              Return a JSON object with:
+              1. "categories" - Array of category names you've identified
+              2. "noteGroups" - Object where keys are category names and values are arrays of note indices
+              3. "layout" - Array of objects with note index and x,y coordinates (0-1000 range for both x and y)`
+            },
+            { role: 'user', content: noteContents.join('\n---\n') }
+          ],
+          model: 'gpt-4o',
+          response_format: { type: 'json_object' },
+          temperature: 0.3
+        });
+        
+        const result = JSON.parse(completion.choices[0].message.content!);
+        
+        // Apply the new layout
+        if (result.layout && Array.isArray(result.layout)) {
+          result.layout.forEach((item: {index: number, x: number, y: number}) => {
+            if (item.index >= 0 && item.index < notes.length) {
+              organizedNotes[item.index] = {
+                ...organizedNotes[item.index],
+                position: { x: item.x, y: item.y }
+              };
+            }
+          });
+          
+          // Update all notes with their new positions
+          setNotes(organizedNotes);
+        }
+      }
+    } catch (error) {
+      console.error('Error organizing notes:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Function to open the smart organize tool
+  const openSmartOrganizeTool = () => {
+    setIsSmartOrganizeOpen(true);
+  };
+
+  // Function to close the smart organize tool
+  const closeSmartOrganizeTool = () => {
+    setIsSmartOrganizeOpen(false);
+  };
+
+  // Add state for canvas settings modal
+  const [isCanvasSettingsOpen, setIsCanvasSettingsOpen] = useState(false);
+
+  // Function to open canvas settings modal
+  const openCanvasSettingsModal = () => {
+    setIsCanvasSettingsOpen(true);
+  };
+
+  // Function to close canvas settings modal
+  const closeCanvasSettingsModal = () => {
+    setIsCanvasSettingsOpen(false);
+  };
+
+  // Add a function to handle filter changes
+  const handleFilterChange = (newFilters: FilterOptions) => {
+    setFilters(newFilters);
+  };
+  
+  // Add a function to handle sort changes
+  const handleSortChange = (newSort: SortOption) => {
+    setSortOption(newSort);
+  };
+  
+  // Add a function to filter and sort notes
+  const filterAndSortNotes = useCallback(() => {
+    // Start with all notes
+    let result = [...notes];
+    
+    // Apply text search
+    if (filters.searchTerm) {
+      const searchTermLower = filters.searchTerm.toLowerCase();
+      result = result.filter(note => {
+        // Search in content
+        if (note.content && note.content.toLowerCase().includes(searchTermLower)) {
+          return true;
+        }
+        
+        // Search in tasks
+        if (note.tasks && note.tasks.some(task => 
+          task.text.toLowerCase().includes(searchTermLower) ||
+          (task.category && task.category.toLowerCase().includes(searchTermLower))
+        )) {
+          return true;
+        }
+        
+        // Search in category
+        if (note.category && note.category.toLowerCase().includes(searchTermLower)) {
+          return true;
+        }
+        
+        return false;
+      });
+    }
+    
+    // Filter by categories
+    if (filters.categories.length > 0) {
+      result = result.filter(note => {
+        // Check note category
+        if (note.category && filters.categories.includes(note.category)) {
+          return true;
+        }
+        
+        // Check task categories
+        if (note.tasks && note.tasks.some(task => 
+          task.category && filters.categories.includes(task.category)
+        )) {
+          return true;
+        }
+        
+        return false;
+      });
+    }
+    
+    // Filter by priority
+    if (filters.priorities.length > 0) {
+      result = result.filter(note => {
+        // Check note priority
+        if (note.priority && filters.priorities.includes(note.priority)) {
+          return true;
+        }
+        
+        // Check task priorities
+        if (note.tasks && note.tasks.some(task => 
+          task.priority && filters.priorities.includes(task.priority)
+        )) {
+          return true;
+        }
+        
+        return false;
+      });
+    }
+    
+    // Filter by has tasks
+    if (filters.hasTasks !== null) {
+      result = result.filter(note => {
+        const hasTasks = note.tasks && note.tasks.length > 0;
+        return filters.hasTasks ? hasTasks : !hasTasks;
+      });
+    }
+    
+    // Filter by due date status
+    if (filters.dueDateStatus !== 'all') {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      const weekFromToday = new Date(today);
+      weekFromToday.setDate(today.getDate() + 7);
+      
+      result = result.filter(note => {
+        // Handle case where no due date is required
+        if (filters.dueDateStatus === 'none') {
+          return !note.dueDate;
+        }
+        
+        // Skip notes without due dates for other filter options
+        if (!note.dueDate) {
+          return false;
+        }
+        
+        const dueDate = new Date(note.dueDate);
+        dueDate.setHours(0, 0, 0, 0);
+        
+        switch (filters.dueDateStatus) {
+          case 'overdue':
+            return dueDate < today;
+          case 'today':
+            return dueDate.getTime() === today.getTime();
+          case 'thisWeek':
+            return dueDate >= today && dueDate <= weekFromToday;
+          case 'future':
+            return dueDate > weekFromToday;
+          default:
+            return true;
+        }
+      });
+    }
+    
+    // Apply sorting
+    result.sort((a, b) => {
+      // Calculate sort values based on sort field
+      let valueA: any;
+      let valueB: any;
+      
+      switch (sortOption.field) {
+        case 'title':
+          valueA = a.content || '';
+          valueB = b.content || '';
+          break;
+        case 'priority':
+          // Map priorities to numbers (high=3, medium=2, low=1, none=0)
+          const priorityMap: Record<string, number> = { high: 3, medium: 2, low: 1 };
+          valueA = a.priority ? priorityMap[a.priority] : 0;
+          valueB = b.priority ? priorityMap[b.priority] : 0;
+          break;
+        case 'dueDate':
+          valueA = a.dueDate ? new Date(a.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
+          valueB = b.dueDate ? new Date(b.dueDate).getTime() : Number.MAX_SAFE_INTEGER;
+          break;
+        case 'created':
+          valueA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          valueB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          break;
+        case 'updated':
+          valueA = a.updatedAt ? new Date(a.updatedAt).getTime() : 0;
+          valueB = b.updatedAt ? new Date(b.updatedAt).getTime() : 0;
+          break;
+        case 'completion':
+          // Calculate completion percentage
+          const getCompletionPercent = (note: NoteType) => {
+            if (!note.tasks || note.tasks.length === 0) return 0;
+            const completed = note.tasks.filter(t => t.done).length;
+            return (completed / note.tasks.length) * 100;
+          };
+          valueA = getCompletionPercent(a);
+          valueB = getCompletionPercent(b);
+          break;
+        case 'category':
+          valueA = a.category || '';
+          valueB = b.category || '';
+          break;
+        default:
+          valueA = a.updatedAt;
+          valueB = b.updatedAt;
+      }
+      
+      // Apply direction
+      const directionMultiplier = sortOption.direction === 'asc' ? 1 : -1;
+      
+      // Compare
+      if (typeof valueA === 'string' && typeof valueB === 'string') {
+        return valueA.localeCompare(valueB) * directionMultiplier;
+      } else {
+        return (valueA - valueB) * directionMultiplier;
+      }
+    });
+    
+    return result;
+  }, [notes, filters, sortOption]);
+  
+  // Update filtered notes when notes, filters, or sort changes
+  useEffect(() => {
+    const result = filterAndSortNotes();
+    setFilteredNotes(result);
+  }, [notes, filters, sortOption, filterAndSortNotes]);
+
+  // Function to toggle between canvas and kanban view
+  const toggleViewMode = () => {
+    // If transitioning to canvas view, reset transform to default
+    if (viewMode === 'kanban' && viewportRef.current?.setTransform) {
+      // Reset the transform before switching to ensure the canvas is properly positioned
+      setTimeout(() => {
+        if (viewportRef.current?.setTransform) {
+          viewportRef.current.setTransform(
+            window.innerWidth / 2, 
+            window.innerHeight / 2, 
+            1 // zoom level
+          );
+        }
+      }, 50);
+    }
+    
+    // Show a brief transition effect
+    document.body.classList.add('view-transition');
+    setTimeout(() => {
+      document.body.classList.remove('view-transition');
+    }, 300);
+    
+    setViewMode(prev => prev === 'canvas' ? 'kanban' : 'canvas');
+  };
+
+  // Function to handle opening a note from kanban
+  const handleOpenNoteFromKanban = (noteId: string) => {
+    setActiveNoteId(noteId);
+    
+    // First change to canvas view
+    setViewMode('canvas');
+    
+    // Scroll to the note in canvas view
+    const note = notes.find(n => n.id === noteId);
+    if (note && viewportRef.current) {
+      // Set the position in the next render cycle
+      setTimeout(() => {
+        if (viewportRef.current?.setTransform) {
+          viewportRef.current.setTransform(
+            -note.position.x + window.innerWidth / 2, 
+            -note.position.y + window.innerHeight / 2, 
+            1 // zoom level
+          );
+          
+          // Flash effect to highlight the note
+          const noteElement = document.querySelector(`[data-note-id="${noteId}"]`);
+          if (noteElement) {
+            noteElement.classList.add('highlight-note');
+            setTimeout(() => {
+              noteElement.classList.remove('highlight-note');
+            }, 1500);
+          }
+        }
+      }, 100);
+    }
+  };
+
+  // Function to add existing kanban note to canvas
+  const handleAddToCanvas = (noteId: string) => {
+    const note = notes.find(n => n.id === noteId);
+    if (note && updateNote) {
+      // Generate a position near the center of the canvas
+      const centerX = window.innerWidth / 2;
+      const centerY = window.innerHeight / 2;
+      const randomOffsetX = Math.random() * 200 - 100; // -100 to 100
+      const randomOffsetY = Math.random() * 200 - 100; // -100 to 100
+      
+      // Update the note with a new position
+      updateNote(noteId, {
+        position: { 
+          x: centerX + randomOffsetX, 
+          y: centerY + randomOffsetY 
+        },
+        updatedAt: new Date().toISOString()
+      });
+      
+      // Switch to canvas view to show the note
+      handleOpenNoteFromKanban(noteId);
+    }
+  };
+
+  // Function to return from kanban to canvas
+  const handleGoBackToCanvas = () => {
+    setViewMode('canvas');
+  };
+
+  // Handle alignment of notes
+  const handleAlignNotes = (alignType: string) => {
+    if (selectedNotes.length < 2) return;
+    
+    console.log(`Aligning notes: ${alignType}`);
+    // Implement alignment logic based on the alignType
+    // For example: 'left', 'center', 'right', 'top', 'middle', 'bottom'
+    
+    const selectedNoteObjects = notes.filter(note => selectedNotes.includes(note.id));
+    
+    // Example implementation for left alignment
+    if (alignType === 'left') {
+      const leftmostX = Math.min(...selectedNoteObjects.map(note => note.position.x));
+      
+      const updatedNotes = notes.map(note => {
+        if (selectedNotes.includes(note.id)) {
+          return {
+            ...note,
+            position: {
+              ...note.position,
+              x: leftmostX
+            }
+          };
+        }
+        return note;
+      });
+      
+      setNotes(updatedNotes);
+    }
+    
+    // Implement other alignment types similarly
+  };
+  
+  // Handle distribution of notes
+  const handleDistributeNotes = (distributeType: string) => {
+    if (selectedNotes.length < 3) return; // Need at least 3 notes to distribute
+    
+    console.log(`Distributing notes: ${distributeType}`);
+    // Implement distribution logic based on distributeType
+    // For example: 'horizontal', 'vertical'
+  };
+  
+  // Handle organization of notes
+  const handleOrganizeNotes = (organizeType: string) => {
+    console.log(`Organizing notes: ${organizeType}`);
+    // Implement organization logic based on organizeType
+    // For example: 'grid', 'columns', 'rows', 'stack', 'mindmap', etc.
+  };
+  
+  // Toggle alignment panel visibility
+  const toggleAlignmentPanel = () => {
+    setShowAlignmentPanel(!showAlignmentPanel);
+  };
+
+  // Add the missing recording functions
+  const startRecording = async () => {
+    try {
+      setIsProcessing(true);
+      setProcessingStatus('Starting recording...');
+      
+      // Add a visual indication that recording has started
+      const micButton = document.querySelector('.mic-button') as HTMLElement;
+      if (micButton) {
+        micButton.classList.add('recording');
+        micButton.setAttribute('title', 'Stop recording');
+      }
+      
+      // Get real audio from the user's microphone
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      
+      mediaStreamRef.current = stream;
+      
+      // Create real MediaRecorder instance with optimal settings
+      const options = { mimeType: 'audio/webm' };
+      const mediaRecorder = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = mediaRecorder;
+      
+      // Reset chunks array
+      setAudioChunks([]);
+      
+      // Event handler for receiving real audio data
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0) {
+          console.log(`Received audio chunk: ${e.data.size} bytes`);
+          setAudioChunks((chunks) => [...chunks, e.data]);
+        }
+      };
+      
+      mediaRecorder.onstop = async () => {
+        setIsProcessing(true);
+        setProcessingStatus('Processing audio...');
+        
+        try {
+          const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+          console.log(`Created audio blob of size ${audioBlob.size} bytes`);
+          
+          if (audioBlob.size > 1000) {
+            setDictationStatus('processing');
+            await handleRealTimeTranscription(audioChunks);
+            setShowPreview(true);
+          } else {
+            console.warn('Audio recording was too short');
+            setDictationStatus('idle');
+            setIsProcessing(false);
+          }
+        } catch (error) {
+          console.error('Error transcribing audio:', error);
+          setIsProcessing(false);
+          setDictationStatus('idle');
+          alert('Error transcribing audio. Please try again.');
+        }
+        
+        // Stop all tracks to properly close the microphone
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach(track => {
+            track.stop();
+            console.log('Stopped audio track:', track.kind);
+          });
+        }
+      };
+      
+      // Start recording with smaller chunk intervals for better real-time feedback
+      mediaRecorder.start(500); // Collect chunks every 500ms
+      console.log('Started recording with MediaRecorder');
+      
+      // Update states
+      setIsRecording(true);
+      setDictationStatus('listening');
+      setVisibleTranscript('');
+      setRealtimeTranscript('Listening...');
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      setIsProcessing(false);
+      alert('Could not start recording. Please check that your microphone is connected and you have granted permission to use it.');
+    }
+  };
+
+  const stopRecording = () => {
+    setIsProcessing(true);
+    setProcessingStatus('Finishing recording...');
+    
+    // Remove recording indicator
+    const micButton = document.querySelector('.mic-button') as HTMLElement;
+    if (micButton) {
+      micButton.classList.remove('recording');
+      micButton.setAttribute('title', 'Start recording');
+    }
+    
+    // Properly stop the MediaRecorder if it's running
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      console.log('Stopping MediaRecorder');
+      mediaRecorderRef.current.stop();
+      
+      // The onstop handler in startRecording will process the audio
+    } else {
+      console.warn('MediaRecorder was not active');
+      setIsProcessing(false);
+      setIsRecording(false);
+      setDictationStatus('idle');
+    }
+    
+    setIsRecording(false);
+  };
+
+  // Add the missing arrangeNotesInCells function
+  const arrangeNotesInCells = () => {
+    // Create a simple grid arrangement for notes
+    const padding = 20;
+    const maxWidth = 250;
+    const maxHeight = 250;
+    
+    // Get a copy of notes to modify
+    const organizedNotes = [...notes];
+    
+    // Define a simple grid with rows and columns
+    const columns = Math.ceil(Math.sqrt(organizedNotes.length));
+    const rows = Math.ceil(organizedNotes.length / columns);
+    
+    // Position each note in a grid cell
+    organizedNotes.forEach((note, index) => {
+      const row = Math.floor(index / columns);
+      const col = index % columns;
+      
+      // Update note position
+      note.position = {
+        x: padding + col * (maxWidth + padding),
+        y: padding + row * (maxHeight + padding)
+      };
+    });
+    
+    // Update notes with new positions
+    setNotes(organizedNotes);
+  };
+
+  // Add updateMiniMapViewport function
+  const updateMiniMapViewport = (state: any) => {
+    try {
+      if (state && typeof state.scale !== 'undefined') {
+        console.log('Updating viewport map:', {
+          x: state.positionX,
+          y: state.positionY,
+          scale: state.scale,
+          windowSize: { width: window.innerWidth, height: window.innerHeight }
+        });
+        
+        setMiniMapViewport({
+          x: state.positionX,
+          y: state.positionY,
+          width: window.innerWidth / state.scale,
+          height: window.innerHeight / state.scale
+        });
+      } else {
+        console.log('Invalid state for minimap update');
+      }
+    } catch (error) {
+      console.error('Error updating minimap viewport:', error);
+    }
+  };
+
+  // Add handleDeleteNote function
+  const handleDeleteNote = (id: string) => {
+    const updatedNotes = notes.filter(note => note.id !== id);
+    setNotes(updatedNotes);
+  };
+
+  // Add missing cell handler functions
+  const handleCellCreate = (cell: any) => {
+    setGridCells([...gridCells, cell]);
+  };
+
+  const handleCellUpdate = (id: string, updates: any) => {
+    setGridCells(gridCells.map(cell => 
+      cell.id === id ? { ...cell, ...updates } : cell
+    ));
+  };
+
+  const handleCellDelete = (id: string) => {
+    setGridCells(gridCells.filter(cell => cell.id !== id));
+  };
+
+  // Add openNote function
+  const openNote = (id: string) => {
+    const note = notes.find(n => n.id === id);
+    if (note && viewportRef.current?.setTransform) {
+      viewportRef.current.setTransform(
+        -note.position.x + window.innerWidth / 2,
+        -note.position.y + window.innerHeight / 2,
+        1
+      );
+    }
+  };
+
+  // Add missing preview functions
+  const clearPreview = () => {
+    setPreviewNotes([]);
+    setShowPreview(false);
+    setDictationStatus('idle');
+  };
+
+  const approveNotes = () => {
+    // Add approved notes from preview to main notes
+    setNotes([...notes, ...previewNotes]);
+    clearPreview();
+  };
+
+  // Add these zoom and pan handler functions
+  const handleZoom = (e: { state: any }): void => {
+    // Update transform state on zoom
+    try {
+      if (e && e.state) {
+        console.log('Zoom event:', {
+          scale: e.state.scale,
+          positionX: e.state.positionX,
+          positionY: e.state.positionY
+        });
+        
+        // Apply the transform directly for smoother zoom
+        const canvasElement = document.querySelector('.react-transform-component') as HTMLElement;
+        if (canvasElement) {
+          canvasElement.style.willChange = 'transform';
+        }
+        
+        if (viewportRef.current) {
+          updateMiniMapViewport(e.state);
+        }
+      } else {
+        console.log('Invalid zoom event state:', e);
+      }
+    } catch (error) {
+      console.error('Error during zoom handling:', error);
+    }
+  };
+
+  const handlePan = (e: { state: any }): void => {
+    // Update transform state on pan
+    try {
+      if (e && e.state) {
+        console.log('Pan event:', {
+          scale: e.state.scale,
+          positionX: e.state.positionX,
+          positionY: e.state.positionY
+        });
+        
+        // Apply the transform directly for smoother panning
+        const canvasElement = document.querySelector('.react-transform-component') as HTMLElement;
+        if (canvasElement) {
+          canvasElement.style.willChange = 'transform';
+        }
+        
+        if (viewportRef.current) {
+          updateMiniMapViewport(e.state);
+        }
+      } else {
+        console.log('Invalid pan event state:', e);
+      }
+    } catch (error) {
+      console.error('Error during pan handling:', error);
+    }
+  };
+
+  // Log viewport state on component mount
+  useEffect(() => {
+    // Log after a short delay to ensure the viewport is initialized
+    const timer = setTimeout(() => {
+      console.log('Initial canvas state:');
+      logViewportState();
+    }, 1000);
+    
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Add handleAddNote function
+  const handleAddNote = () => {
+    const newNote: NoteType = {
+      id: `note-${Date.now()}`,
+      content: '# New Note',
+      position: { x: window.innerWidth / 2 - 150, y: window.innerHeight / 2 - 100 },
+      type: 'sticky',
+      color: 'blue',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    addNote(newNote);
+  };
+
+  // Add a debug function to log current transform state
+  const logViewportState = () => {
+    if (viewportRef.current) {
+      try {
+        const state = viewportRef.current.state;
+        if (state && typeof state.scale !== 'undefined') {
+          console.log('Current viewport state:', {
+            scale: state.scale,
+            positionX: state.positionX,
+            positionY: state.positionY,
+            contentComponent: viewportRef.current.contentComponent,
+            wrapperComponent: viewportRef.current.wrapperComponent
+          });
+        } else {
+          console.log('Viewport state not initialized yet');
+        }
+      } catch (err) {
+        console.log('Error accessing viewport state:', err);
+      }
+    } else {
+      console.log('Viewport ref not available');
+    }
+  };
+
+  // Add a keydown handler to trigger the log on F2 key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'F2') {
+        console.log('--- Canvas Debug Info ---');
+        logViewportState();
+        console.log('Canvas dimensions:', {
+          width: 4000,
+          height: 2250
+        });
+        console.log('Notes count:', notes.length);
+        console.log('----------------------');
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [notes]);
+
+  // Add a keydown handler to toggle grid with G key and for other shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // F2 for debug info
+      if (e.key === 'F2') {
+        console.log('--- Canvas Debug Info ---');
+        logViewportState();
+        console.log('Canvas dimensions:', {
+          width: INITIAL_CANVAS_WIDTH,
+          height: INITIAL_CANVAS_HEIGHT
+        });
+        console.log('Notes count:', notes.length);
+        console.log('----------------------');
+      }
+      
+      // G key to toggle grid
+      if (e.key === 'g' && !e.ctrlKey && !e.metaKey) {
+        setShowGrid(prev => !prev);
+        // Toggle the body class directly for immediate feedback
+        document.body.classList.toggle('show-grid');
+      }
+    };
+
+    // Apply grid class to body based on showGrid state
+    if (showGrid) {
+      document.body.classList.add('show-grid');
+    } else {
+      document.body.classList.remove('show-grid');
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [notes, showGrid]);
+
   return (
-    <div className="canvas-container h-full relative">
-      {/* Enhanced Header with Better UI */}
-      <div className="canvas-header">
-        <div className="header-left">
-          <h1 className="app-title">Project Manager</h1>
-          
-          <div className="viewport-select">
-            <button className="viewport-btn active">
-              <Grid size={18} />
-              <span>Notes</span>
-            </button>
-            <button className="viewport-btn">
-              <Calendar size={18} />
-              <span>ViewportSelect</span>
-            </button>
-          </div>
-        </div>
-        
-        <div className="header-center">
-          <div className="search-container">
-            <Search size={18} className="search-icon" />
-            <input
-              type="text"
-              placeholder="Search notes and tasks..."
-              className="main-search-input"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-            {searchTerm && (
-              <button 
-                className="clear-search-button"
-                onClick={() => setSearchTerm('')}
-                title="Clear search"
-              >
-                <X size={18} />
-              </button>
-            )}
-          </div>
-        </div>
-        
-        <div className="header-right">
-          <div className="header-actions">
-            <button 
-              className="header-button"
-              onClick={onSwitchToNotes}
-              title="Switch to Notes View"
-            >
-              <Layout size={18} />
-              <span>Notes View</span>
-            </button>
-            
-            <button 
-              className="header-button"
-              onClick={() => setIsMarkdownImporterOpen(true)}
-              title="Import notes from Markdown"
-            >
-              <FileText size={18} />
-              <span>Import</span>
-            </button>
-            
-            <button
-              className={`header-button ${isSelectMode ? 'active' : ''}`}
-              onClick={() => setIsSelectMode(!isSelectMode)}
-              title={isSelectMode ? "Exit selection mode" : "Enter selection mode"}
-            >
-              <ListTodo size={18} />
-              <span>{isSelectMode ? 'Exit Select' : 'Select'}</span>
-            </button>
-            
-            {isSelectMode && (
-              <button
-                className="header-button"
-                onClick={openAlignmentTool}
-                title="Align selected notes"
-              >
-                <Layout size={18} />
-                <span>Align</span>
-              </button>
-            )}
-            
-            <button 
-              className="header-button side-panel-toggle"
-              onClick={() => setShowSidePanel(prev => !prev)}
-              title={showSidePanel ? "Hide Notes Panel" : "Show Notes Panel"}
-            >
-              {showSidePanel ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
-              <span>Panel</span>
-            </button>
-          </div>
-        </div>
-      </div>
-      
-      {/* Floating Action Button - Enhanced for dictation */}
-      <div className="floating-actions-wrapper">
-        <button
-          className={`floating-action primary floating-mic ${isRecording ? 'recording pulse-animation' : ''}`}
-          onClick={isRecording ? stopRecording : startRecording}
-          aria-label={isRecording ? "Stop recording" : "Start recording with voice"}
-          title={isRecording ? "Stop recording" : "Start recording with voice"}
-        >
-          {isRecording ? (
-            <div className="relative">
-              <Mic className="h-6 w-6" />
-              <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full animate-pulse"></span>
-            </div>
-          ) : (
-            <Mic className="h-6 w-6" />
-          )}
-        </button>
-
-        <button
-          className="floating-action secondary"
-          onClick={() => handleAddNoteWithType('sticky')}
-          aria-label="Add note"
-          title="Add new note"
-        >
-          <Plus className="h-6 w-6" />
-        </button>
-      </div>
-      
-      {/* Prominent Add Note Button - Bottom Right */}
-      <div className="floating-action-container bottom">
-        <div className="note-type-selector-wrapper" ref={noteSelectorRef}>
-          <button
-            onClick={toggleNoteTypeSelector}
-            className="floating-action secondary"
-            aria-label="Add new note"
-            title="Add new note"
-          >
-            <Plus className="w-6 h-6" />
-          </button>
-          
-          {showNoteTypeSelector && (
-            <div className="note-type-selector">
-              <div className="note-type-header">
-                <h4>Select Note Type</h4>
-              </div>
-              <div className="note-type-options">
+    <div className="h-full flex flex-col relative">
+      {/* Dictation Status Overlay */}
+      {dictationStatus !== 'idle' && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-card-bg p-6 rounded-lg shadow-xl max-w-3xl w-full max-h-[80vh] overflow-auto">
+            {dictationStatus === 'listening' && (
+              <div className="text-center">
+                <div className="flex items-center justify-center mb-4">
+                  <div className="relative">
+                    <div className="w-16 h-16 rounded-full bg-red-500 flex items-center justify-center animate-pulse">
+                      <Mic size={32} className="text-white" />
+                    </div>
+                    <div className="absolute inset-0 rounded-full border-4 border-red-300 animate-ping"></div>
+                  </div>
+                </div>
+                <h2 className="text-xl font-bold mb-2">Listening...</h2>
+                <p className="text-gray-400 mb-4">Speak clearly into your microphone</p>
                 <button 
-                  className="note-type-option" 
-                  onClick={() => handleAddNoteWithType('default')}
-                  title="Basic note for general content"
-                >
-                  <FileText size={18} />
-                  <span>Basic Note</span>
-                </button>
-                <button 
-                  className="note-type-option" 
-                  onClick={() => handleAddNoteWithType('tasks')}
-                  title="Task list for tracking to-dos"
-                >
-                  <CheckSquare size={18} />
-                  <span>Task List</span>
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-      
-      {/* Microphone Button - Now in bottom right with pink styling */}
-      <div className="floating-mic">
-        <button
-          className={`floating-mic-button ${isRecording ? 'recording' : ''}`}
-          onClick={isRecording ? stopRecording : startRecording}
-          title={isRecording ? 'Stop Recording' : 'Start Voice Recording'}
-        >
-          <Mic size={24} />
-        </button>
-      </div>
-      
-      {/* Agent Assistant Indicator with improved tooltip */}
-      {settings && settings.aiEnabled && (
-        <div className="agent-assistant-indicator" title="AI Assistant is active">
-          <div className="agent-assistant-tooltip">
-            <h4>Agent Assistant Active</h4>
-            <p>The AI assistant is enabled and can help with:</p>
-            <ul>
-              <li>Suggesting related tasks</li>
-              <li>Organizing your notes</li>
-              <li>Enhancing dictation quality</li>
-              <li>Brainstorming ideas</li>
-            </ul>
-          </div>
-          <BrainCircuit size={20} className="agent-assistant-icon" />
-        </div>
-      )}
-      
-      {/* Quick Alignment Widget - Always Available */}
-      <div className="quick-alignment-widget">
-        <button 
-          className="quick-alignment-btn" 
-          onClick={() => alignSelectedNotes('left')}
-          title="Align left"
-        >
-          <AlignLeft size={18} />
-        </button>
-        <button 
-          className="quick-alignment-btn" 
-          onClick={() => alignSelectedNotes('center')}
-          title="Align center"
-        >
-          <AlignCenter size={18} />
-        </button>
-        <button 
-          className="quick-alignment-btn" 
-          onClick={() => alignSelectedNotes('right')}
-          title="Align right"
-        >
-          <AlignRight size={18} />
-        </button>
-        <button 
-          className="quick-alignment-btn" 
-          onClick={() => distributeSelectedNotes('vertical')}
-          title="Distribute vertically"
-        >
-          <ArrowDown size={18} />
-        </button>
-        <button 
-          className="quick-alignment-btn" 
-          onClick={() => distributeSelectedNotes('horizontal')}
-          title="Distribute horizontally"
-        >
-          <ArrowRight size={18} />
-        </button>
-      </div>
-      
-      {/* Improved Dictation Panel - Enhanced visibility */}
-      {(isRecording || dictationStatus === 'listening') && (
-        <div className="dictation-panel fixed top-16 left-0 right-0 bg-card-bg border-b-2 border-accent-pink p-4 z-10 shadow-lg">
-          <div className="max-w-3xl mx-auto">
-            <div className="flex items-center justify-between mb-2">
-              <h3 className="text-lg font-medium flex items-center">
-                <Mic className="h-5 w-5 mr-2 text-accent-pink" />
-                <span>Voice Recording</span>
-                <span className="ml-2 text-xs px-2 py-0.5 bg-accent-pink text-white rounded-full animate-pulse">ACTIVE</span>
-              </h3>
-              <div className="flex items-center gap-2">
-                <button 
-                  className="btn-icon text-text-secondary hover:text-text-primary"
                   onClick={stopRecording}
-                  aria-label="Stop recording"
+                  className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white"
                 >
-                  <X size={20} />
+                  Stop Recording
                 </button>
               </div>
-            </div>
+            )}
             
-            <div className="transcript-area bg-node-bg p-4 rounded-md min-h-[120px] border border-border-light overflow-y-auto max-h-[300px]">
-              {visibleTranscript ? (
-                <p className="text-text-primary whitespace-pre-line">
-                  {visibleTranscript}
-                </p>
-              ) : (
-                <div className="flex flex-col items-center justify-center h-[100px] text-text-secondary">
-                  <Mic className="h-8 w-8 mb-2 animate-pulse text-accent-pink" />
-                  <span className="italic">Listening... Speak now.</span>
+            {dictationStatus === 'processing' && (
+              <div className="text-center">
+                <div className="flex items-center justify-center mb-4">
+                  <div className="w-16 h-16 rounded-full bg-yellow-500 flex items-center justify-center">
+                    <Loader2 size={32} className="text-white animate-spin" />
+                  </div>
                 </div>
-              )}
-            </div>
+                <h2 className="text-xl font-bold mb-2">Processing...</h2>
+                <p className="text-gray-400 mb-4">{processingStatus}</p>
+              </div>
+            )}
             
-            <div className="mt-4 flex items-center justify-between">
-              <div className="text-sm text-text-secondary">
-                <span className="inline-flex items-center">
-                  <span className="animate-pulse mr-2 w-2 h-2 rounded-full bg-accent-pink"></span>
-                  Microphone is active - speak clearly
-                </span>
-              </div>
-              
-              <button 
-                className="btn-secondary bg-accent-pink hover:bg-accent-pink/90 text-white px-4 py-2 rounded-md"
-                onClick={stopRecording}
-              >
-                Stop Recording
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Recording Badge - Always visible when recording */}
-      {isRecording && (
-        <div className="dictation-badge fixed bottom-4 left-1/2 transform -translate-x-1/2 bg-accent-pink text-white px-4 py-2 rounded-full flex items-center gap-2 shadow-lg z-50">
-          <span className="animate-pulse w-3 h-3 rounded-full bg-white"></span>
-          <span>Recording Active</span>
-        </div>
-      )}
-      
-      {/* Main Canvas Area */}
-      <div className={`canvas ${showSidePanel ? 'canvas-with-side-panel' : ''}`}>
-        <TransformWrapper
-          initialScale={1}
-          minScale={MIN_ZOOM}
-          maxScale={MAX_ZOOM}
-          wheel={{ step: ZOOM_STEP }}
-          limitToBounds={false}
-          doubleClick={{ disabled: true }}
-          onTransformed={(ref) => updateMiniMapViewport(ref.state)}
-        >
-          {({ zoomIn, zoomOut, setTransform }) => (
-            <>
-              <TransformComponent 
-                wrapperClass="!w-full !h-full" 
-                contentClass="!bg-app-bg"
-              >
-                <div className="relative" style={{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }}>
-                  {/* Grid Pattern */}
-                  <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHZpZXdCb3g9IjAgMCA0MCA0MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxnIHN0cm9rZT0icmdiYSgyNTUsIDI1NSwgMjU1LCAwLjA1KSI+PHBhdGggZD0iTTAgMGg0MHY0MEgweiIvPjwvZz48L2c+PC9zdmc+')] opacity-50"></div>
-                  
-                  {/* Canvas Boundaries */}
-                  {showCanvasBoundaries && (
-                    <>
-                      {/* Boundary Indicators */}
-                      <div className="absolute inset-0 border-2 border-dashed border-accent-blue/30 pointer-events-none"></div>
-                        
-                      {/* Expansion Buttons */}
-                      <button 
-                        className="canvas-expand-button right"
-                        onClick={() => expandCanvas('right')}
-                        title="Expand canvas right"
-                      >
-                        <ChevronRight />
-                      </button>
-                      <button 
-                        className="canvas-expand-button bottom"
-                        onClick={() => expandCanvas('bottom')}
-                        title="Expand canvas down"
-                      >
-                        <ChevronRight className="rotate-90" />
-                      </button>
-                      <button 
-                        className="canvas-expand-button left"
-                        onClick={() => expandCanvas('left')}
-                        title="Expand canvas left"
-                      >
-                        <ChevronRight className="rotate-180" />
-                      </button>
-                      <button 
-                        className="canvas-expand-button top"
-                        onClick={() => expandCanvas('top')}
-                        title="Expand canvas up"
-                      >
-                        <ChevronRight className="-rotate-90" />
-                      </button>
-                    </>
-                  )}
-                  
-                  {/* Grid organization overlay */}
-                  <CanvasGrid
-                    canvasWidth={canvasWidth}
-                    canvasHeight={canvasHeight}
-                    layout={gridLayout}
-                    columns={columns}
-                    rows={rows}
-                    gridVisible={gridVisible}
-                    cells={gridCells}
-                    activeCell={activeCell}
-                    onLayoutChange={setGridLayout}
-                    onColumnsChange={setColumns}
-                    onRowsChange={setRows}
-                    onCellCreate={handleCellCreate}
-                    onCellUpdate={handleCellUpdate}
-                    onCellDelete={handleCellDelete}
-                    onCellSelect={setActiveCell}
-                  />
-                    
-                  {/* Notes - ensure they're rendered */}
-                  {notes && notes.length > 0 ? 
-                    notes
-                      .filter(note => !hiddenNotes.includes(note.id))
-                      .map(note => (
-                        <Note
-                          key={note.id}
-                          note={note}
-                          onMove={handleNoteMove}
-                          onContentChange={handleContentChange}
-                          data-note-id={`note-${note.id}`}
-                          isSelectable={isSelectMode}
-                          isSelected={selectedNotes.includes(note.id)}
-                          onSelect={toggleNoteSelection}
-                        />
-                      ))
-                    : 
-                    <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-text-secondary">
-                      No notes yet. Click the + button to add one.
-                    </div>
-                  }
-                </div>
-              </TransformComponent>
-              
-              {/* Zoom Controls - Bottom Left */}
-              <div className="zoom-controls-container">
-                <div className="zoom-controls">
-                  <button
-                    onClick={() => zoomOut()}
-                    className="zoom-button"
-                    aria-label="Zoom out"
+            {dictationStatus === 'previewing' && (
+              <div>
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-bold">Dictation Results</h2>
+                  <button 
+                    onClick={() => setDictationStatus('idle')}
+                    className="p-2 bg-gray-700 hover:bg-gray-600 rounded text-white"
                   >
-                    <Minus size={16} />
+                    <X size={20} />
                   </button>
-                  <button
-                    onClick={() => zoomIn()}
-                    className="zoom-button"
-                    aria-label="Zoom in"
-                  >
-                    <Plus size={16} />
-                  </button>
-                </div>
-              </div>
-              
-              {/* Mini Map - Bottom Right Corner */}
-              <div className="mini-map-container">
-                <div className="mini-map">
-                  <div 
-                    className="mini-map-viewport"
-                    style={{
-                      left: `${miniMapViewport.x}%`,
-                      top: `${miniMapViewport.y}%`,
-                      width: `${miniMapViewport.width}%`,
-                      height: `${miniMapViewport.height}%`
-                    }}
-                  ></div>
-                  {/* Canvas Boundary Indicator in Mini Map */}
-                  <div className="mini-map-boundary" style={{
-                    width: '100%',
-                    height: '100%',
-                    border: '1px solid rgba(99, 102, 241, 0.3)'
-                  }}></div>
-                  {notes && notes.length > 0 && 
-                    notes
-                      .filter(note => !hiddenNotes.includes(note.id))
-                      .map(note => (
-                        <div 
-                          key={`minimap-${note.id}`}
-                          className="mini-map-note"
-                          style={{
-                            left: `${(note.position.x / canvasWidth) * 100}%`,
-                            top: `${(note.position.y / canvasHeight) * 100}%`,
-                            backgroundColor: 
-                              note.color === 'blue' ? 'var(--accent-blue)' :
-                              note.color === 'green' ? 'var(--accent-green)' :
-                              note.color === 'pink' ? 'var(--accent-pink)' :
-                              note.color === 'yellow' ? 'var(--accent-yellow)' :
-                              note.color === 'purple' ? 'var(--accent-purple)' :
-                              'var(--accent-blue)'
-                          }}
-                          onClick={() => {
-                            // Center on this note when clicked in mini map
-                            setTransform(
-                              -note.position.x + (window.innerWidth / 2) - 150,
-                              -note.position.y + (window.innerHeight / 2) - 100,
-                              1
-                            );
-                          }}
-                        ></div>
-                      ))
-                  }
-                </div>
-              </div>
-            </>
-          )}
-        </TransformWrapper>
-      </div>
-      
-      {/* Tools & Modals */}
-      <AlignmentTool 
-        isOpen={isAlignmentOpen} 
-        onClose={closeAlignmentTool}
-      />
-      
-      <MarkdownImporter 
-        isOpen={isMarkdownImporterOpen} 
-        onClose={() => setIsMarkdownImporterOpen(false)} 
-      />
-      
-      {/* Side Panel */}
-      {showSidePanel && (
-        <SidePanel
-          notes={notes}
-          toggleNoteVisibility={toggleNoteVisibility}
-          hiddenNotes={hiddenNotes}
-          openNote={openNote}
-          updateNoteContent={handleContentChange}
-          updateTask={handleTaskUpdate}
-          deleteNote={handleDeleteNote}
-        />
-      )}
-
-      {/* Preview Notes Panel for approving dictation results */}
-      {showPreview && previewNotes.length > 0 && (
-        <div className="dictation-preview-panel">
-          <div className="dictation-preview-header">
-            <h3>
-              <span className="dictation-preview-title">Dictation Results</span>
-              <span className="dictation-preview-count">{previewNotes.length} {previewNotes.length === 1 ? 'note' : 'notes'} created</span>
-            </h3>
-            <p className="dictation-preview-explanation">
-              AI has organized your dictation into {previewNotes.length} {previewNotes.length === 1 ? 'note' : 'notes'}.
-              Review the categorization below or use brainstorming to refine.
-            </p>
-            <div className="dictation-preview-actions">
-              <button 
-                className="dictation-preview-action approve"
-                onClick={approveNotes}
-              >
-                Add to Canvas
-              </button>
-              <button 
-                className="dictation-preview-action cancel"
-                onClick={clearPreview}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-          
-          <div className="dictation-preview-content">
-            {previewNotes.map((note, index) => (
-              <div key={note.id} className="dictation-preview-note">
-                <div className={`dictation-preview-note-color ${note.color}`}></div>
-                <div className="dictation-preview-note-content">
-                  <div className="dictation-preview-note-text">
-                    {typeof note.content === 'string' 
-                      ? note.content.split('\n\n')[0] 
-                      : 'Untitled'}
-                  </div>
-                  <div className="dictation-preview-note-meta">
-                    <div className="dictation-preview-note-type">
-                      {note.type === 'task' ? 'Task List' : 'Note'}
-                      {note.tasks && note.tasks.length > 0 && 
-                        <span className="dictation-preview-task-count">
-                          {note.tasks.length} {note.tasks.length === 1 ? 'task' : 'tasks'}
-                        </span>
-                      }
-                    </div>
-                    {note.aiSuggestions && note.aiSuggestions.category && (
-                      <div className="dictation-preview-category">
-                        <span className="category-label">Category:</span> {note.aiSuggestions.category}
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* Show tasks if available */}
-                  {note.tasks && note.tasks.length > 0 && (
-                    <div className="dictation-preview-tasks">
-                      <div className="dictation-preview-tasks-list">
-                        {note.tasks.slice(0, 3).map((task, taskIndex) => (
-                          <div key={task.id} className="dictation-preview-task-item">
-                            <span className="dictation-preview-task-bullet">•</span>
-                            <span className="dictation-preview-task-text">{task.text}</span>
-                          </div>
-                        ))}
-                        {note.tasks.length > 3 && (
-                          <div className="dictation-preview-task-more">
-                            +{note.tasks.length - 3} more tasks
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  
-                  {/* AI Reasoning */}
-                  {note.aiSuggestions && note.aiSuggestions.reasoning && index === 0 && (
-                    <div className="dictation-preview-ai-reasoning">
-                      <div className="dictation-preview-ai-reasoning-toggle" onClick={() => toggleAIReasoning()}>
-                        <BrainCircuit size={16} />
-                        <span>AI Categorization Logic</span>
-                      </div>
-                      {showAIReasoning && (
-                        <div className="dictation-preview-ai-reasoning-content">
-                          {note.aiSuggestions.reasoning}
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </div>
                 
-                {/* Brainstorm button for this note */}
+                <div className="mb-4 p-4 bg-gray-800 rounded-lg">
+                  <h3 className="font-medium mb-2">Transcript:</h3>
+                  <p className="whitespace-pre-wrap text-gray-300">{visibleTranscript}</p>
+                </div>
+                
+                <div className="mb-6">
+                  <h3 className="font-medium mb-2">Generated Notes:</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {notes.slice(-3).map((note) => {
+                      // Extract a title from the content if possible
+                      const content = note.content?.toString() || '';
+                      const firstLine = content.split('\n')[0].replace(/^#+\s+/, '');
+                      const title = firstLine.length > 0 ? firstLine : 'Untitled Note';
+                      
+                      return (
+                        <div 
+                          key={note.id}
+                          className={`p-3 rounded-lg border-l-4 border-${note.color || 'blue'}-500 bg-gray-800`}
+                        >
+                          <h4 className="font-medium mb-1 truncate">{title}</h4>
+                          <p className="text-sm text-gray-400 truncate">{content.substring(0, 100)}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+                
+                <div className="flex justify-end space-x-3">
+                  <button 
+                    onClick={() => setDictationStatus('idle')}
+                    className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      
+      <div className="flex-1 relative">
+        <DndProvider backend={HTML5Backend}>
+          {/* Add an infinite grid overlay that stays fixed regardless of panning */}
+          <div className="infinite-grid-overlay"></div>
+          
+          {viewMode === 'canvas' ? (
+            <TransformWrapper
+              ref={viewportRef}
+              initialScale={1}
+              minScale={MIN_ZOOM}
+              maxScale={MAX_ZOOM}
+              wheel={{ 
+                step: 0.03,
+                smoothStep: 0.005,
+                activationKeys: []
+              }}
+              onZoom={handleZoom}
+              onPanning={handlePan}
+              onInit={() => {
+                console.log('TransformWrapper initialized');
+                // Delay logging to ensure state is populated
+                setTimeout(() => {
+                  try {
+                    if (viewportRef.current?.state) {
+                      console.log('Initial transform state:', viewportRef.current.state);
+                      logViewportState();
+                    } else {
+                      console.log('Transform state not available yet after init');
+                    }
+                  } catch (err) {
+                    console.error('Error during transform init callback:', err);
+                  }
+                }, 1000);
+              }}
+              initialPositionX={0}
+              initialPositionY={0}
+              limitToBounds={false}
+              disablePadding={true}
+              minPositionX={-Infinity}
+              maxPositionX={Infinity}
+              minPositionY={-Infinity}
+              maxPositionY={Infinity}
+              panning={{ 
+                disabled: false,
+                velocityDisabled: false,
+                lockAxisX: false,
+                lockAxisY: false,
+                activationKeys: [],
+                excluded: []
+              }}
+              doubleClick={{ mode: "reset" }}
+              centerOnInit={false}
+            >
+              {/* Toolbar */}
+              <div className="absolute top-4 left-4 z-10 flex items-center space-x-2 bg-black/30 p-2 rounded">
                 <button 
-                  className="dictation-preview-brainstorm-button"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    console.log('Brainstorm button clicked for note:', note);
-                    // Make a deep copy of the note to avoid reference issues
-                    const noteCopy = JSON.parse(JSON.stringify(note));
-                    handleBrainstorm(note.id);
-                  }}
-                  title="Get AI suggestions to enhance this note"
+                  className="p-2 bg-blue-600 hover:bg-blue-700 rounded text-white"
+                  onClick={handleAddNote}
                 >
-                  <BrainCircuit size={16} />
-                  <span>Brainstorm</span>
+                  <Plus size={20} />
+                </button>
+                <button 
+                  className={`p-2 ${isRecording ? 'bg-red-500' : 'bg-gray-700 hover:bg-gray-600'} rounded text-white`}
+                  onClick={isRecording ? stopRecording : startRecording}
+                  aria-label={isRecording ? "Stop recording" : "Start voice recording"}
+                  title={isRecording ? "Stop recording" : "Start voice recording (⌘D)"}
+                >
+                  <Mic size={20} />
+                </button>
+                <button 
+                  className="p-2 bg-gray-700 hover:bg-gray-600 rounded text-white"
+                  onClick={() => {
+                    setShowGrid(!showGrid);
+                    // Also log viewport state when toggling grid for easier debugging
+                    console.log('Grid toggle - viewport state:');
+                    logViewportState();
+                  }}
+                  title={`${showGrid ? 'Hide' : 'Show'} grid (G)`}
+                >
+                  <Grid size={20} />
+                </button>
+                <button 
+                  className="p-2 bg-gray-700 hover:bg-gray-600 rounded text-white"
+                  onClick={toggleViewMode}
+                  title={viewMode === 'canvas' ? "Switch to Kanban Board" : "Switch to Canvas"}
+                >
+                  {viewMode === 'canvas' ? <Trello size={20} /> : <Layout size={20} />}
+                </button>
+                <button 
+                  className="p-2 bg-gray-700 hover:bg-gray-600 rounded text-white"
+                  onClick={openSmartOrganizeTool}
+                >
+                  <SlidersHorizontal size={20} />
+                </button>
+                <button 
+                  className="p-2 bg-gray-700 hover:bg-gray-600 rounded text-white"
+                  onClick={() => {
+                    // Reset canvas view
+                    if (viewportRef.current?.resetTransform) {
+                      viewportRef.current.resetTransform();
+                    }
+                  }}
+                  title="Reset view"
+                >
+                  <Maximize2 size={20} />
                 </button>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
 
-      {/* AI Brainstorming Modal */}
-      {brainstormNote && (
-        <div className="brainstorm-modal">
-          <div className="brainstorm-modal-content">
-            <div className="brainstorm-modal-header">
-              <h3>Brainstorm: {typeof brainstormNote.content === 'string' ? brainstormNote.content.split('\n\n')[0] : 'Untitled'}</h3>
-              <button 
-                className="brainstorm-modal-close"
-                onClick={() => setBrainstormNote(null)}
+              <TransformComponent
+                wrapperClass="!w-full !h-full cursor-grab active:cursor-grabbing"
+                contentClass="!w-full !h-full transform-gpu"
               >
-                <X size={20} />
-              </button>
-            </div>
-            
-            <div className="brainstorm-modal-body">
-              {isLoadingBrainstorm ? (
-                <div className="brainstorm-loading">
-                  <Loader2 className="animate-spin h-6 w-6 text-accent-blue" />
-                  <span>Generating ideas...</span>
+                <div 
+                  className="relative will-change-transform" 
+                  style={{ 
+                    width: "100%", 
+                    height: "100%", 
+                    backgroundImage: "none",
+                    backgroundSize: '100px 100px',
+                    transformOrigin: '0 0',
+                    backgroundColor: 'transparent'
+                  }}
+                >
+                  {notes.map((note) => (
+                    <Note
+                      key={note.id}
+                      note={note}
+                      onMove={handleNoteMove}
+                      onContentChange={handleContentChange}
+                    />
+                  ))}
                 </div>
-              ) : (
-                <>
-                  <div className="brainstorm-section">
-                    <h4>Current Note Content</h4>
-                    <div className="current-note-content">
-                      {typeof brainstormNote.content === 'string' ? brainstormNote.content : 'Untitled'}
-                    </div>
-                    
-                    {brainstormNote.tasks && brainstormNote.tasks.length > 0 && (
-                      <div className="brainstorm-current-tasks">
-                        <h5>Tasks</h5>
-                        <ul>
-                          {brainstormNote.tasks.map(task => (
-                            <li key={task.id}>{task.text}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                  </div>
-                  
-                  <div className="brainstorm-section">
-                    <h4>AI Suggestions {selectedSuggestions.length > 0 && <span className="brainstorm-selection-count">({selectedSuggestions.length} selected)</span>}</h4>
-                    {brainstormSuggestions.length > 0 ? (
-                      <div className="brainstorm-suggestions">
-                        {brainstormSuggestions.map((suggestion) => (
-                          <div 
-                            key={suggestion.id} 
-                            className={`brainstorm-suggestion ${selectedSuggestions.some(s => s.id === suggestion.id) ? 'selected' : ''}`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              applySuggestion(suggestion);
-                            }}
-                          >
-                            <div className="brainstorm-suggestion-type">
-                              {suggestion.type === 'task' && <CheckSquare size={16} className="suggestion-type-icon" />}
-                              {suggestion.type === 'content' && <AlignLeft size={16} className="suggestion-type-icon" />}
-                              {suggestion.type === 'organization' && <Layout size={16} className="suggestion-type-icon" />}
-                              <span>{suggestion.type}</span>
-                            </div>
-                            <div className="brainstorm-suggestion-content">
-                              {suggestion.text}
-                            </div>
-                            <button 
-                              className={`brainstorm-apply-button ${selectedSuggestions.some(s => s.id === suggestion.id) ? 'selected' : ''}`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                toggleSuggestionSelection(suggestion);
-                              }}
-                            >
-                              {selectedSuggestions.some(s => s.id === suggestion.id) ? 'Selected' : 'Select'}
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="brainstorm-suggestion-prompt">
-                        <p>AI can analyze your note and suggest improvements or related tasks.</p>
-                        <button 
-                          className="brainstorm-generate-button"
-                          onClick={() => generateBrainstormSuggestions()}
-                        >
-                          Generate Suggestions
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
+              </TransformComponent>
+            </TransformWrapper>
+          ) : (
+            <div className="h-full overflow-auto">
+              <div className="p-4 flex flex-col h-full">
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-xl font-semibold">Kanban Board</h2>
+                  <button 
+                    className="p-2 bg-gray-700 hover:bg-gray-600 rounded text-white"
+                    onClick={handleGoBackToCanvas}
+                  >
+                    <Layout size={20} />
+                  </button>
+                </div>
+                
+                <KanbanBoard 
+                  onOpenNote={handleOpenNoteFromKanban}
+                  onGoBackToCanvas={handleGoBackToCanvas}
+                  onAddToCanvas={handleAddToCanvas}
+                />
+              </div>
             </div>
-            
-            <div className="brainstorm-modal-footer">
-              <button 
-                className="brainstorm-modal-button secondary"
-                onClick={() => setBrainstormNote(null)}
-              >
-                Cancel
-              </button>
-              <button 
-                className="brainstorm-modal-button primary"
-                onClick={() => finalizeBrainstormChanges()}
-                disabled={brainstormSuggestions.length === 0 || selectedSuggestions.length === 0}
-              >
-                Apply {selectedSuggestions.length} {selectedSuggestions.length === 1 ? 'Change' : 'Changes'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add Processing Indicator Panel */}
-      {isProcessing && (
-        <div className="processing-panel">
-          <div className="processing-content">
-            <div className="processing-spinner">
-              <Loader2 className="animate-spin h-8 w-8 text-accent-pink" />
-            </div>
-            <div className="processing-status">
-              <h3>Processing Your Dictation</h3>
-              <p>{processingStatus || 'Please wait...'}</p>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Canvas controls toolbar */}
-      <div className="canvas-controls absolute bottom-4 left-1/2 transform -translate-x-1/2 flex items-center space-x-2 bg-card-bg border border-border-light rounded-lg p-2 shadow-lg z-10">
-        {/* Add grid toggle button */}
-        <button
-          className={`p-2 rounded-md transition-colors ${gridVisible ? 'bg-accent-blue text-white' : 'hover:bg-node-bg/60'}`}
-          onClick={toggleGridVisibility}
-          title="Toggle grid organization"
-        >
-          <Grid size={18} />
-        </button>
-        
-        {gridVisible && (
-          <button
-            className="p-2 rounded-md hover:bg-node-bg/60 transition-colors"
-            onClick={arrangeNotesInCells}
-            title="Auto-arrange notes in cells"
-          >
-            <Move size={18} />
-          </button>
-        )}
+          )}
+        </DndProvider>
       </div>
     </div>
   );
-}
+};

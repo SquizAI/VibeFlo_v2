@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Note as NoteType, Label, Task } from '../types';
 import { useNoteStore } from '../store/noteStore';
+import NotesFolder from './NotesFolder';
 import FolderNavigation, { Folder } from './FolderNavigation';
 import EnhancedSearch from './EnhancedSearch';
 import SecureNote from './SecureNote';
@@ -11,6 +12,7 @@ import {
   Search
 } from 'lucide-react';
 import { PlusIcon, XIcon } from 'lucide-react';
+import { extractTasksFromText, processDictationTranscript } from '../lib/ai';
 
 interface NoteViewProps {
   onSwitchToCanvas: () => void;
@@ -134,10 +136,15 @@ const NoteView: React.FC<NoteViewProps> = ({ onSwitchToCanvas, selectedFolder = 
   
   const [selectedFolderState, setSelectedFolderState] = useState<string>(selectedFolder);
   const [selectedNote, setSelectedNote] = useState<string | null>(null);
-  const [filteredNotes, setFilteredNotes] = useState<NoteType[]>(notes);
   const [notesInView, setNotesInView] = useState<NoteType[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>(searchTerm);
+  const [sortBy, setSortBy] = useState<'updated' | 'created' | 'title' | 'category'>('updated');
+  
+  // Voice recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [transcript, setTranscript] = useState('');
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
   
   // Update selected folder when prop changes
   useEffect(() => {
@@ -146,80 +153,52 @@ const NoteView: React.FC<NoteViewProps> = ({ onSwitchToCanvas, selectedFolder = 
     }
   }, [selectedFolder]);
   
-  // Filter notes based on selected folder and search term
+  // Handle search from NotesFolder
+  const handleSearch = (query: string) => {
+    setSearchQuery(query);
+  };
+
+  // Handle sort from NotesFolder
+  const handleSort = (sortType: 'updated' | 'created' | 'title' | 'category') => {
+    setSortBy(sortType);
+  };
+
+  // Filter and sort notes based on current state
   useEffect(() => {
-    let filtered: NoteType[] = [];
-    
-    const folder = folders.find(f => f.id === selectedFolderState);
-    if (!folder) {
-      setNotesInView(notes);
-      return;
+    let filtered = [...notes];
+
+    // Apply folder filter
+    if (selectedFolderState !== 'all') {
+      filtered = filtered.filter(note => note.category === selectedFolderState);
     }
-    
-    if (folder.id === 'all') {
-      filtered = [...notes];
-    } else if (folder.id === 'recent') {
-      // Sort by most recently updated and take the top 10
-      filtered = [...notes].sort((a, b) => {
-        // Assuming notes have a lastUpdated property, or using ID as a fallback
-        return Number(b.id) - Number(a.id);
-      }).slice(0, 10);
-    } else if (folder.isSmartFolder && folder.filter) {
-      // Apply smart folder filter
-      switch (folder.filter.type) {
-        case 'favorite':
-          filtered = notes.filter(note => note.labels?.some(label => label.name === 'Favorite'));
-          break;
-        case 'secure':
-          filtered = notes.filter(note => 
-            note.content && 
-            typeof note.content === 'string' && 
-            note.content.startsWith('encrypted:')
-          );
-          break;
-        case 'tag':
-          filtered = notes.filter(note => 
-            note.labels?.some(label => label.name === folder.filter?.value)
-          );
-          break;
-        case 'priority':
-          filtered = notes.filter(note => note.priority === folder.filter?.value);
-          break;
-        case 'date':
-          const today = new Date();
-          today.setHours(0, 0, 0, 0);
-          filtered = notes.filter(note => {
-            if (!note.dueDate) return false;
-            const dueDate = new Date(note.dueDate);
-            dueDate.setHours(0, 0, 0, 0);
-            return dueDate.getTime() === today.getTime();
-          });
-          break;
-      }
-    } else if (folder.id === 'tasks') {
-      // Show only task-type notes or notes with tasks
-      filtered = notes.filter(note => 
-        note.type === 'task' || (note.tasks && note.tasks.length > 0)
-      );
-    } else {
-      // Regular folder - match by tag/label with folder name
-      filtered = notes.filter(note => 
-        note.labels?.some(label => label.name === folder.name) || 
-        note.category === folder.id
-      );
-    }
-    
-    // Apply search filter if there's a search term
+
+    // Apply search filter
     if (searchQuery) {
-      const search = searchQuery.toLowerCase();
+      const query = searchQuery.toLowerCase();
       filtered = filtered.filter(note => 
-        (note.content && note.content.toLowerCase().includes(search)) ||
-        (note.tasks && note.tasks.some(task => task.text.toLowerCase().includes(search)))
+        note.content?.toLowerCase().includes(query) ||
+        note.category?.toLowerCase().includes(query)
       );
     }
-    
+
+    // Apply sorting
+    filtered.sort((a, b) => {
+      switch (sortBy) {
+        case 'updated':
+          return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
+        case 'created':
+          return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+        case 'title':
+          return (a.content || '').localeCompare(b.content || '');
+        case 'category':
+          return (a.category || '').localeCompare(b.category || '');
+        default:
+          return 0;
+      }
+    });
+
     setNotesInView(filtered);
-  }, [selectedFolderState, notes, folders, searchQuery]);
+  }, [notes, selectedFolderState, searchQuery, sortBy]);
   
   // Handle folder creation
   const handleFolderCreate = (folder: Folder) => {
@@ -382,114 +361,119 @@ const NoteView: React.FC<NoteViewProps> = ({ onSwitchToCanvas, selectedFolder = 
     }
   };
   
-  // Add handleMicButtonClick function
+  // Handle voice recording
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      chunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunksRef.current.push(e.data);
+        }
+      };
+
+      mediaRecorder.onstop = async () => {
+        const audioBlob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        await handleRealTimeTranscription(audioBlob);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      console.error('Error accessing microphone:', error);
+      alert('Error accessing microphone. Please ensure you have granted microphone permissions.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const handleRealTimeTranscription = async (audioBlob: Blob) => {
+    try {
+      // Create form data for the audio
+      const formData = new FormData();
+      formData.append('audio', audioBlob);
+
+      // Send to Deepgram API
+      const response = await fetch('https://api.deepgram.com/v1/listen', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Token ${import.meta.env.VITE_DEEPGRAM_API_KEY}`,
+        },
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to transcribe audio');
+      }
+
+      const data = await response.json();
+      const transcribedText = data.results?.channels[0]?.alternatives[0]?.transcript || '';
+      
+      if (transcribedText) {
+        setTranscript(transcribedText);
+        await processDictationTranscript(transcribedText);
+      }
+    } catch (error) {
+      console.error('Error transcribing audio:', error);
+      alert('Error transcribing audio. Please try again.');
+    }
+  };
+
   const handleMicButtonClick = () => {
-    // TODO: Implement voice recording functionality
-    console.log('Starting voice recording...');
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
   };
   
   // Render component logic
   return (
-    <div className="note-view h-full flex flex-col">
-      <div className="note-view-panel h-full overflow-hidden flex flex-col">
-        <div className="flex justify-between items-center p-4 border-b border-border-light">
-          <h2 className="text-xl font-semibold">Notes</h2>
-          
-          <div className="flex gap-2">
-            <div className="relative w-36">
-              <select
-                className="w-full p-2 bg-secondary border border-border-light rounded-md text-sm"
-                onChange={(e) => {
-                  // Add sorting logic here
-                  console.log('Sort by:', e.target.value);
-                }}
-              >
-                <option value="date-desc">Newest First</option>
-                <option value="date-asc">Oldest First</option>
-                <option value="alpha-asc">A-Z</option>
-                <option value="alpha-desc">Z-A</option>
-              </select>
-            </div>
-            
-            <button 
-              className="flex items-center gap-1 px-3 py-2 bg-primary text-white rounded-md hover:bg-primary-hover transition-colors"
-              onClick={handleCreateNote}
-            >
-              <Plus className="w-4 h-4" /> New
-            </button>
-          </div>
+    <div className="note-view h-full">
+      <div className="flex h-full">
+        <div className="w-64 border-r border-border-light p-4">
+          <NotesFolder
+            onSelectFolder={setSelectedFolderState}
+            selectedFolderId={selectedFolderState}
+            onSearch={handleSearch}
+            onSort={handleSort}
+          />
         </div>
-        
-        <div className="p-4 border-b border-border-light">
-          <div className="relative">
-            <input
-              type="text"
-              placeholder="Search notes..."
-              className="w-full p-2 pl-8 bg-secondary border border-border-light rounded-md"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-            <Search className="w-4 h-4 absolute left-2 top-1/2 transform -translate-y-1/2 text-muted" />
-            {searchQuery && (
-              <X
-                className="w-4 h-4 absolute right-2 top-1/2 transform -translate-y-1/2 text-muted cursor-pointer"
-                onClick={() => setSearchQuery('')}
-              />
-            )}
-          </div>
-        </div>
-        
-        <div className="flex-1 overflow-auto p-4">
-          {isLoading ? (
-            <div className="flex justify-center items-center h-full">
-              <span className="loading loading-spinner loading-md"></span>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {filteredNotes.length === 0 ? (
-                <div className="text-center py-8">
-                  <div className="text-muted">No notes found</div>
-                  <button 
-                    className="mt-2 px-3 py-1 bg-primary text-white rounded-md text-sm hover:bg-primary-hover transition-colors"
-                    onClick={handleCreateNote}
-                  >
-                    Create a new note
-                  </button>
-                </div>
-              ) : (
-                filteredNotes.map((note) => (
+        <div className="flex-1">
+          <div className="note-view-container h-full">
+            <div className="p-4">
+              <div className="note-list space-y-2">
+                {notesInView.map(note => (
                   <NoteCard
                     key={note.id}
                     note={note}
-                    onClick={() => handleNoteSelect(note.id)}
+                    onClick={() => setSelectedNote(note.id)}
                     isSelected={selectedNote === note.id}
                     onDelete={() => handleDeleteNote(note.id)}
                   />
-                ))
-              )}
+                ))}
+              </div>
             </div>
-          )}
+            <button
+              onClick={handleMicButtonClick}
+              className="mic-button"
+              aria-label={isRecording ? "Stop recording" : "Start voice recording"}
+              title={isRecording ? "Stop recording" : "Start voice recording"}
+            >
+              <MicrophoneIcon size={24} />
+            </button>
+          </div>
         </div>
-        
-        <button 
-          className="mic-button"
-          onClick={handleMicButtonClick}
-          title="Start Voice Recording"
-        >
-          <MicrophoneIcon className="w-6 h-6" />
-        </button>
       </div>
-      
-      {selectedNote && (
-        <NoteEditor 
-          note={notes.find(n => n.id === selectedNote)!} 
-          onClose={() => setSelectedNote(null)} 
-          onUpdate={(updatedNote: NoteType) => {
-            updateNote(updatedNote.id, updatedNote);
-            setSelectedNote(updatedNote.id);
-          }}
-        />
-      )}
     </div>
   );
 };

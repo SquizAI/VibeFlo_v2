@@ -24,6 +24,7 @@ dist-ssr
 *.sw?
 
 # Local environment files with real API keys
+.env
 .env.local
 .env.development.local
 .env.production.local

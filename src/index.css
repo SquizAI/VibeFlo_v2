@@ -177,3 +177,74 @@
 .tabs-content .p-4 {
   padding: 1rem;
 }
+
+/* Folder Navigation Styles */
+.folder-navigation {
+  @apply h-full flex flex-col;
+}
+
+.folder-search {
+  @apply sticky top-0 z-10;
+  background-color: var(--app-bg);
+  backdrop-filter: blur(8px);
+}
+
+.folder-list {
+  @apply flex-1 overflow-y-auto;
+}
+
+/* Note View Styles */
+.note-view {
+  @apply flex flex-col w-full;
+}
+
+.note-view-container {
+  @apply flex-1 overflow-y-auto;
+}
+
+.note-list {
+  @apply grid gap-4;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+}
+
+/* Remove side panel styles */
+.side-panel,
+.side-panel-header,
+.side-panel-content,
+.side-panel-toggle,
+.side-panel.hidden {
+  display: none !important;
+}
+
+/* Ensure main content takes full width */
+.note-view,
+.note-view-container {
+  width: 100%;
+  height: 100%;
+}
+
+/* Remove any margin/padding adjustments for side panel */
+.canvas-with-side-panel {
+  margin-right: 0 !important;
+}
+
+/* Reset main content sizing */
+.main-content {
+  width: 100%;
+}
+
+.tabs {
+  display: none !important;
+}
+
+.tabs-list {
+  display: none !important;
+}
+
+.tabs-trigger {
+  display: none !important;
+}
+
+.tabs-content {
+  display: none !important;
+}
